@@ -55,6 +55,8 @@ query, the realtime broker with frame batching and honest backpressure, the rule
 with dedupe/threshold/cooldown and every §10.7 safety valve, the durable delivery queue
 with backoff/circuit-breaker/HMAC, first-run bootstrap, and the IIS publish profile.
 
-The Blazor UI currently ships the apps overview, live tail, and sign-in; the remaining
-management screens (§9) are API-complete and await their UI. See `docs/SPEC.md` §15 for
-the full phase plan.
+The Blazor UI implements all §9 screens — sign-in, apps overview (live tiles with
+sparklines), live tail, search, event detail, app settings, tokens, destinations (with
+template editor + live preview + test), rules, deliveries, and admin — on a theme-aware
+(light + dark) design system in `wwwroot/css/logrr.css`. See `docs/SPEC.md` §15 for the
+full phase plan.
