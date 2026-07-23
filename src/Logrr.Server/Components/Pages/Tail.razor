@@ -4,44 +4,93 @@
 @implements IDisposable
 @inject Logrr.Realtime.RealtimeBroker Broker
 
-<PageTitle>@AppId — live tail</PageTitle>
+<PageTitle>@AppId · live tail — Logrr</PageTitle>
 
-<div class="wrap">
-    <h1>Live tail — @AppId</h1>
+<AppTabs AppId="@AppId" Active="tail" Title="Live tail">
+    <span class="badge @(_paused ? "warn" : "good")">
+        @if (_paused) { <span class="dot"></span><text> Paused</text> } else { <span class="dot-live"></span><text> Streaming</text> }
+    </span>
+</AppTabs>
 
-    <div class="card" style="display:flex; gap:1rem; align-items:center; flex-wrap:wrap">
-        <label>Min level
-            <select @bind="_minLevel" @bind:after="Resubscribe">
+<div class="card" style="padding:var(--sp-3) var(--sp-4); margin-bottom:var(--sp-4)">
+    <div class="row">
+        <div class="field" style="margin:0; min-width:150px">
+            <label>Minimum level</label>
+            <select class="input" @bind="_minLevel" @bind:after="Resubscribe">
                 @foreach (var l in Levels) { <option value="@l">@l</option> }
             </select>
-        </label>
-        <label>Filter
-            <input @bind="_filter" @bind:after="Resubscribe" placeholder="Level >= Error and UserId = 1042" style="width:340px" />
-        </label>
-        <button @onclick="TogglePause">@(_paused ? "Resume" : "Pause")</button>
-        <button @onclick="Clear">Clear</button>
-        <span style="flex:1"></span>
-        <span class="muted">@_matchedTotal matched · @_rendered rendered</span>
-        @if (_droppedTotal > 0)
-        {
-            <span class="pill">@_droppedTotal not shown (rate limited)</span>
-        }
-        @if (_error is not null)
-        {
-            <span style="color:#fca5a5">@_error</span>
-        }
+        </div>
+        <div class="field flex-1" style="margin:0; min-width:260px">
+            <label>Filter expression</label>
+            <input class="input mono" @bind="_filter" @bind:after="Resubscribe"
+                   placeholder="Level >= Error and UserId = 1042" />
+        </div>
+        <div class="flex gap-2" style="align-self:flex-end">
+            <button class="btn" @onclick="TogglePause">@(_paused ? "▶ Resume" : "⏸ Pause")</button>
+            <button class="btn ghost" @onclick="Clear">Clear</button>
+        </div>
     </div>
+    @if (_error is not null)
+    {
+        <div class="badge danger mt-2">@_error</div>
+    }
+</div>
 
-    <table>
-        <thead><tr><th style="width:190px">Time</th><th style="width:90px">Level</th><th>Message</th></tr></thead>
+<div class="flex between items-center mb-4" style="font-size:var(--fs-sm)">
+    <div class="flex gap-3 muted">
+        <span><span class="num" style="color:var(--ink); font-weight:600">@_matchedTotal</span> matched</span>
+        <span><span class="num" style="color:var(--ink); font-weight:600">@_rows.Count</span> shown</span>
+    </div>
+    @if (_droppedTotal > 0)
+    {
+        <span class="pill">⚡ @Format(_droppedTotal) not shown (rate limited)</span>
+    }
+</div>
+
+<div class="table-wrap">
+    <table class="data">
+        <thead>
+            <tr>
+                <th style="width:120px">Time</th>
+                <th style="width:110px">Level</th>
+                <th>Message</th>
+            </tr>
+        </thead>
         <tbody>
-            @foreach (var e in _rows)
+            @if (_rows.Count == 0)
             {
-                <tr>
-                    <td class="muted">@e.Timestamp.ToString("HH:mm:ss.fff")</td>
-                    <td><span class="lvl lvl-@e.Level">@e.Level</span></td>
-                    <td>@e.Message</td>
+                <tr><td colspan="3"><div class="empty" style="padding:var(--sp-6)"><div class="glyph">≣</div><div class="muted">Waiting for events…</div></div></td></tr>
+            }
+            @foreach (var row in _rows)
+            {
+                <tr class="clickable" @onclick="() => Toggle(row)">
+                    <td class="mono-sm nowrap">@row.Event.Timestamp.ToLocalTime().ToString("HH:mm:ss.fff")</td>
+                    <td><LevelChip Level="row.Event.Level" /></td>
+                    <td class="truncate" style="max-width:640px">@row.Event.Message</td>
                 </tr>
+                @if (row.Expanded)
+                {
+                    <tr>
+                        <td colspan="3" style="background:var(--surface-2)">
+                            <div class="grid" style="gap:var(--sp-3)">
+                                <div class="kv">
+                                    <dt>Message</dt><dd>@row.Event.Message</dd>
+                                    @if (row.Event.Template is not null) { <dt>Template</dt><dd class="mono-sm">@row.Event.Template</dd> }
+                                    @if (row.Event.Source is not null) { <dt>Source</dt><dd class="mono-sm">@row.Event.Source</dd> }
+                                    @if (row.Event.TraceId is not null) { <dt>Trace</dt><dd class="mono-sm">@row.Event.TraceId</dd> }
+                                </div>
+                                @if (row.Event.Exception is not null)
+                                {
+                                    <pre class="code">@row.Event.Exception</pre>
+                                }
+                                @if (row.Event.Properties is { ValueKind: System.Text.Json.JsonValueKind.Object } props)
+                                {
+                                    <pre class="code">@System.Text.Json.JsonSerializer.Serialize(props, Indented)</pre>
+                                }
+                            </div>
+                        </td>
+                    </tr>
+                }
             }
         </tbody>
     </table>
@@ -51,16 +100,18 @@
     [Parameter] public string AppId { get; set; } = "";
 
     private static readonly string[] Levels = ["Verbose", "Debug", "Information", "Warning", "Error", "Fatal"];
+    private static readonly System.Text.Json.JsonSerializerOptions Indented = new() { WriteIndented = true };
     private const int MaxRows = 500;
 
-    private readonly LinkedList<Logrr.Contracts.LogEventDto> _rows = new();
+    private sealed class Row { public required LogEventDto Event { get; init; } public bool Expanded { get; set; } }
+
+    private readonly LinkedList<Row> _rows = new();
     private string _minLevel = "Debug";
     private string _filter = "";
     private bool _paused;
     private string? _subscriptionId;
     private string? _error;
     private int _matchedTotal;
-    private int _rendered;
     private int _droppedTotal;
 
     protected override void OnInitialized() => Subscribe();
@@ -71,32 +122,23 @@
         try
         {
             _subscriptionId = Broker.Subscribe(
-                new Logrr.Contracts.SubscribeRequest { AppId = AppId, MinLevel = _minLevel, Filter = string.IsNullOrWhiteSpace(_filter) ? null : _filter },
-                userId: null,
-                sink: OnFrame);
+                new SubscribeRequest { AppId = AppId, MinLevel = _minLevel, Filter = string.IsNullOrWhiteSpace(_filter) ? null : _filter },
+                userId: null, sink: OnFrame);
         }
-        catch (Exception ex)
-        {
-            _error = ex.Message;
-        }
+        catch (Exception ex) { _error = ex.Message; }
     }
 
-    private Task OnFrame(Logrr.Contracts.Frame frame)
+    private Task OnFrame(Frame frame) => InvokeAsync(() =>
     {
-        return InvokeAsync(() =>
+        _droppedTotal += frame.Dropped;
+        if (frame.Rate is { } r) { _matchedTotal += r.Matched; }
+        foreach (var e in frame.Events)
         {
-            _droppedTotal += frame.Dropped;
-            if (frame.Rate is { } r) { _matchedTotal += r.Matched; }
-
-            foreach (var e in frame.Events)
-            {
-                _rows.AddFirst(e);
-                _rendered++;
-                while (_rows.Count > MaxRows) { _rows.RemoveLast(); }
-            }
-            StateHasChanged();
-        });
-    }
+            _rows.AddFirst(new Row { Event = e });
+            while (_rows.Count > MaxRows) { _rows.RemoveLast(); }
+        }
+        StateHasChanged();
+    });
 
     private void Resubscribe()
     {
@@ -111,7 +153,10 @@
         if (_paused) { Broker.Pause(_subscriptionId); } else { Broker.Resume(_subscriptionId); }
     }
 
+    private void Toggle(Row row) => row.Expanded = !row.Expanded;
     private void Clear() => _rows.Clear();
+
+    private static string Format(long n) => n >= 1000 ? $"{n / 1000.0:0.#}k" : n.ToString();
 
     public void Dispose()
     {

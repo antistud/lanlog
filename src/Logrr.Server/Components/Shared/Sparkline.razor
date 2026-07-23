@@ -1,0 +1,41 @@
+@if (Points.Count > 1)
+{
+    <svg class="spark" viewBox="0 0 100 34" preserveAspectRatio="none" role="img" aria-label="@AriaLabel">
+        <path class="area" d="@_area" />
+        <path class="line" d="@_line" />
+    </svg>
+}
+else
+{
+    <div class="spark" aria-hidden="true"></div>
+}
+
+@code {
+    [Parameter] public IReadOnlyList<double> Points { get; set; } = [];
+    [Parameter] public string AriaLabel { get; set; } = "trend";
+
+    private string _line = "";
+    private string _area = "";
+
+    protected override void OnParametersSet()
+    {
+        if (Points.Count < 2) { return; }
+
+        double max = Points.Max();
+        double min = Points.Min();
+        double range = max - min <= 0 ? 1 : max - min;
+        int n = Points.Count;
+
+        var sb = new System.Text.StringBuilder();
+        for (var i = 0; i < n; i++)
+        {
+            double x = i / (double)(n - 1) * 100.0;
+            double y = 32.0 - (Points[i] - min) / range * 28.0; // 2px top/bottom padding
+            sb.Append(i == 0 ? 'M' : 'L').Append(F(x)).Append(' ').Append(F(y)).Append(' ');
+        }
+        _line = sb.ToString().TrimEnd();
+        _area = $"{_line} L 100 34 L 0 34 Z";
+    }
+
+    private static string F(double d) => d.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+}

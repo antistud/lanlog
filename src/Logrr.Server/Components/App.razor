@@ -1,35 +1,24 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <base href="/" />
     <title>Logrr</title>
-    <link rel="icon" href="data:," />
-    <style>
-        :root { color-scheme: dark; }
-        body { margin: 0; font-family: ui-sans-serif, system-ui, sans-serif; background: #0f1115; color: #e5e7eb; }
-        a { color: #7dd3fc; }
-        .wrap { max-width: 1100px; margin: 0 auto; padding: 1.5rem; }
-        header.top { display: flex; align-items: center; gap: 1rem; padding: .75rem 1.5rem; background: #161a22; border-bottom: 1px solid #232a36; }
-        header.top .brand { font-weight: 700; letter-spacing: .02em; }
-        table { width: 100%; border-collapse: collapse; }
-        th, td { text-align: left; padding: .4rem .6rem; border-bottom: 1px solid #232a36; font-size: .9rem; }
-        .lvl { font-weight: 600; padding: 0 .4rem; border-radius: .25rem; font-size: .75rem; }
-        .lvl-Error, .lvl-Fatal { color: #fca5a5; }
-        .lvl-Warning { color: #fcd34d; }
-        .lvl-Information { color: #93c5fd; }
-        .lvl-Debug, .lvl-Verbose { color: #9ca3af; }
-        .card { background: #161a22; border: 1px solid #232a36; border-radius: .5rem; padding: 1rem; margin-bottom: 1rem; }
-        input, button, select { font: inherit; padding: .4rem .6rem; border-radius: .35rem; border: 1px solid #2b3442; background: #0f1115; color: #e5e7eb; }
-        button { background: #1d4ed8; border-color: #1d4ed8; cursor: pointer; }
-        .muted { color: #9ca3af; font-size: .85rem; }
-        .pill { background: #7c2d12; color: #fed7aa; padding: .15rem .5rem; border-radius: 1rem; font-size: .75rem; }
-    </style>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ctext y='13' font-size='13'%3E%E2%96%9A%3C/text%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="css/logrr.css" />
+    <script>
+        // Apply the saved theme before first paint to avoid a flash.
+        (function () {
+            var m = localStorage.getItem('logrr-theme');
+            if (m === 'light' || m === 'dark') document.documentElement.setAttribute('data-theme', m);
+        })();
+    </script>
     <HeadOutlet />
 </head>
 <body>
     <Routes />
+    <script src="js/theme.js"></script>
     <script src="_framework/blazor.web.js"></script>
 </body>
 </html>

@@ -1,19 +1,89 @@
 @inherits LayoutComponentBase
+@implements IDisposable
+@inject NavigationManager Nav
 
-<header class="top">
-    <span class="brand">▚ Logrr</span>
-    <a href="/">Apps</a>
-    <span style="flex:1"></span>
-    <AuthorizeView>
-        <Authorized>
-            <span class="muted">@context.User.Identity?.Name</span>
-            <form method="post" action="/auth/logout" style="display:inline">
-                <button type="submit">Sign out</button>
-            </form>
-        </Authorized>
-    </AuthorizeView>
-</header>
+<AuthorizeView>
+    <Authorized>
+        <div class="app">
+            <aside class="sidebar">
+                <div class="brand"><span class="glyph">▚</span> Logrr</div>
 
-<main>
-    @Body
-</main>
+                <NavLink class="nav-link" href="/" Match="NavLinkMatch.All">
+                    <span class="ico">◫</span> Apps
+                </NavLink>
+
+                @if (_appId is not null)
+                {
+                    <div class="nav-group">
+                        <div class="label">@_appId</div>
+                        <NavLink class="nav-link" href="@($"/apps/{_appId}/tail")"><span class="ico">≣</span> Live tail</NavLink>
+                        <NavLink class="nav-link" href="@($"/apps/{_appId}/search")"><span class="ico">⌕</span> Search</NavLink>
+                        <NavLink class="nav-link" href="@($"/apps/{_appId}/tokens")"><span class="ico">⚿</span> Tokens</NavLink>
+                        <NavLink class="nav-link" href="@($"/apps/{_appId}/settings")"><span class="ico">⚙</span> Settings</NavLink>
+                    </div>
+                }
+
+                <div class="nav-group">
+                    <div class="label">Alerting</div>
+                    <NavLink class="nav-link" href="/destinations"><span class="ico">➤</span> Destinations</NavLink>
+                    <NavLink class="nav-link" href="/rules"><span class="ico">❃</span> Rules</NavLink>
+                    <NavLink class="nav-link" href="/deliveries"><span class="ico">✉</span> Deliveries</NavLink>
+                </div>
+
+                <AuthorizeView Roles="Admin" Context="admin">
+                    <div class="nav-group">
+                        <div class="label">System</div>
+                        <NavLink class="nav-link" href="/admin"><span class="ico">◉</span> Admin</NavLink>
+                    </div>
+                </AuthorizeView>
+
+                <div class="spacer"></div>
+
+                <div class="row" style="justify-content:space-between; padding:0 var(--sp-2)">
+                    <span class="meta">@context.User.Identity?.Name</span>
+                    <div class="flex gap-2">
+                        <button class="btn ghost icon" title="Toggle theme"
+                                onclick="var m=window.logrrTheme.cycle();this.textContent=m==='dark'?'☾':m==='light'?'☀':'◐';">◐</button>
+                        <form method="post" action="/auth/logout" style="display:inline">
+                            <button class="btn ghost icon" type="submit" title="Sign out">⎋</button>
+                        </form>
+                    </div>
+                </div>
+            </aside>
+
+            <div class="main">
+                <div class="content">
+                    @Body
+                </div>
+            </div>
+        </div>
+    </Authorized>
+    <NotAuthorized>
+        @Body
+    </NotAuthorized>
+</AuthorizeView>
+
+@code {
+    private string? _appId;
+
+    protected override void OnInitialized()
+    {
+        Nav.LocationChanged += OnLocationChanged;
+        Recompute();
+    }
+
+    private void OnLocationChanged(object? sender, Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs e)
+    {
+        Recompute();
+        StateHasChanged();
+    }
+
+    private void Recompute()
+    {
+        var path = new Uri(Nav.Uri).AbsolutePath.Trim('/');
+        var segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        _appId = segments.Length >= 2 && segments[0] == "apps" ? segments[1] : null;
+    }
+
+    public void Dispose() => Nav.LocationChanged -= OnLocationChanged;
+}

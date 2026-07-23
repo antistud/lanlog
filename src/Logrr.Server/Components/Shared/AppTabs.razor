@@ -1,0 +1,21 @@
+<div class="page-head">
+    <div>
+        <div class="meta"><a href="/">Apps</a> <span class="muted-2">/</span> <span class="mono-sm">@AppId</span></div>
+        <h1>@Title</h1>
+    </div>
+    @ChildContent
+</div>
+
+<div class="tabs">
+    <a class="tab @(Active == "tail" ? "active" : "")" href="@($"/apps/{AppId}/tail")">Live tail</a>
+    <a class="tab @(Active == "search" ? "active" : "")" href="@($"/apps/{AppId}/search")">Search</a>
+    <a class="tab @(Active == "tokens" ? "active" : "")" href="@($"/apps/{AppId}/tokens")">Tokens</a>
+    <a class="tab @(Active == "settings" ? "active" : "")" href="@($"/apps/{AppId}/settings")">Settings</a>
+</div>
+
+@code {
+    [Parameter] public string AppId { get; set; } = "";
+    [Parameter] public string Active { get; set; } = "";
+    [Parameter] public string Title { get; set; } = "";
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+}

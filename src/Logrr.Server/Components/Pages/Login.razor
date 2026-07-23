@@ -4,20 +4,38 @@
 
 <PageTitle>Sign in — Logrr</PageTitle>
 
-<div class="wrap" style="max-width:420px">
-    <div class="card">
-        <h2>Sign in</h2>
-        @if (Error)
-        {
-            <p style="color:#fca5a5">Invalid username or password.</p>
-        }
-        <form method="post" action="/auth/login">
-            <input type="hidden" name="returnUrl" value="@ReturnUrl" />
-            <p><input name="username" placeholder="Username" autofocus style="width:100%" /></p>
-            <p><input name="password" type="password" placeholder="Password" style="width:100%" /></p>
-            <button type="submit">Sign in</button>
-        </form>
-        <p class="muted">First run? See <code>FIRST-RUN-CREDENTIALS.txt</code> in the data directory.</p>
+<div style="min-height:100vh; display:flex; align-items:center; justify-content:center; padding:var(--sp-4)">
+    <div style="width:100%; max-width:380px">
+        <div class="flex items-center gap-2" style="justify-content:center; margin-bottom:var(--sp-5); font-size:1.4rem; font-weight:700; letter-spacing:-.02em">
+            <span style="color:var(--accent)">▚</span> Logrr
+        </div>
+        <div class="card">
+            <h2 style="margin-bottom:var(--sp-1)">Sign in</h2>
+            <p class="muted mb-4" style="font-size:var(--fs-sm)">Welcome back. Enter your credentials to continue.</p>
+
+            @if (Error)
+            {
+                <div class="badge danger w-full" style="justify-content:center; padding:var(--sp-2); margin-bottom:var(--sp-4)">
+                    Invalid username or password
+                </div>
+            }
+
+            <form method="post" action="/auth/login">
+                <input type="hidden" name="returnUrl" value="@ReturnUrl" />
+                <div class="field">
+                    <label for="u">Username</label>
+                    <input id="u" class="input" name="username" autofocus autocomplete="username" />
+                </div>
+                <div class="field">
+                    <label for="p">Password</label>
+                    <input id="p" class="input" name="password" type="password" autocomplete="current-password" />
+                </div>
+                <button class="btn primary w-full" type="submit">Sign in</button>
+            </form>
+        </div>
+        <p class="muted-2 text-right" style="font-size:var(--fs-xs); margin-top:var(--sp-3); text-align:center">
+            First run? See <code>FIRST-RUN-CREDENTIALS.txt</code> in the data directory.
+        </p>
     </div>
 </div>
 

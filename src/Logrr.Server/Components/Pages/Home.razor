@@ -1,49 +1,120 @@
 @page "/"
 @attribute [Authorize]
+@rendermode InteractiveServer
+@implements IDisposable
 @inject Logrr.Storage.Control.AppStore Apps
 @inject Logrr.Storage.StatsReader Stats
 
 <PageTitle>Apps — Logrr</PageTitle>
 
-<div class="wrap">
-    <h1>Apps</h1>
-    @if (_apps.Count == 0)
-    {
-        <div class="card">
-            <p>No apps yet.</p>
-            <p class="muted">Create one via <code>POST /api/v1/apps</code>, then point a Serilog Seq sink at
-            <code>/api/events/raw</code> with the app's token.</p>
-        </div>
-    }
-    else
-    {
-        <table>
-            <thead>
-                <tr><th>App</th><th>Events</th><th>Errors (all)</th><th>Storage</th><th>Last event</th><th></th></tr>
-            </thead>
-            <tbody>
-                @foreach (var app in _apps)
-                {
-                    var s = _stats.GetValueOrDefault(app.Id);
-                    <tr>
-                        <td><strong>@app.Name</strong> <span class="muted">@app.Id</span></td>
-                        <td>@(s?.TotalEvents ?? 0)</td>
-                        <td>@((s?.CountByLevel.GetValueOrDefault("Error") ?? 0) + (s?.CountByLevel.GetValueOrDefault("Fatal") ?? 0))</td>
-                        <td>@FormatBytes(s?.StorageBytes ?? 0)</td>
-                        <td class="muted">@(s?.LastEventUtc?.ToString("u") ?? "—")</td>
-                        <td><a href="/apps/@app.Id/tail">Live tail →</a></td>
-                    </tr>
-                }
-            </tbody>
-        </table>
-    }
+<div class="page-head">
+    <div>
+        <h1>Apps</h1>
+        <div class="sub">Live overview across every application sending logs.</div>
+    </div>
+    <div class="flex gap-2">
+        <span class="badge"><span class="dot-live"></span> Live</span>
+        <AuthorizeView Roles="Admin">
+            <button class="btn primary" @onclick="() => _showCreate = true">＋ New app</button>
+        </AuthorizeView>
+    </div>
 </div>
+
+@if (_apps.Count == 0)
+{
+    <div class="card">
+        <EmptyState Glyph="◫" Title="No apps yet">
+            Create an app, generate an ingest token, then point a Serilog Seq sink at
+            <code>/api/events/raw</code>. Logs will stream in here.
+        </EmptyState>
+    </div>
+}
+else
+{
+    <div class="grid cols-3">
+        @foreach (var app in _apps)
+        {
+            var s = _stats.GetValueOrDefault(app.Id);
+            var errors = (s?.CountByLevel.GetValueOrDefault("Error") ?? 0) + (s?.CountByLevel.GetValueOrDefault("Fatal") ?? 0);
+            <a class="tile @(errors > 0 ? "alert" : "")" href="@($"/apps/{app.Id}/tail")">
+                <div class="flex between items-center">
+                    <div>
+                        <div style="font-weight:600; font-size:var(--fs-lg); letter-spacing:-.01em">@app.Name</div>
+                        <div class="mono-sm">@app.Id</div>
+                    </div>
+                    @if (!app.IsEnabled)
+                    {
+                        <span class="badge">disabled</span>
+                    }
+                    else if (errors > 0)
+                    {
+                        <span class="badge danger">@Format(errors) errors</span>
+                    }
+                </div>
+
+                <div class="mt-2"><Sparkline Points="Series(s)" AriaLabel="events over the last 24 hours" /></div>
+
+                <div class="flex between mt-2" style="font-size:var(--fs-sm)">
+                    <div><div class="muted-2" style="font-size:var(--fs-xs)">EVENTS</div><span class="num" style="font-weight:600">@Format(s?.TotalEvents ?? 0)</span></div>
+                    <div><div class="muted-2" style="font-size:var(--fs-xs)">STORAGE</div><span class="num" style="font-weight:600">@FormatBytes(s?.StorageBytes ?? 0)</span></div>
+                    <div class="text-right"><div class="muted-2" style="font-size:var(--fs-xs)">LAST EVENT</div><span class="muted">@LastSeen(s)</span></div>
+                </div>
+            </a>
+        }
+    </div>
+}
+
+<Modal @bind-Open="_showCreate" Title="New app">
+    <ChildContent>
+        <div class="field">
+            <label>App id</label>
+            <input class="input" @bind="_id" placeholder="billing" />
+            <span class="hint">Lowercase slug, 3–32 chars: <code>[a-z0-9-]</code>. Used as the folder name.</span>
+        </div>
+        <div class="field">
+            <label>Display name</label>
+            <input class="input" @bind="_name" placeholder="Billing Service" />
+        </div>
+        <div class="grid cols-2">
+            <div class="field"><label>Retention (days)</label><input class="input" type="number" @bind="_retention" /></div>
+            <div class="field"><label>Max size (MB)</label><input class="input" type="number" @bind="_maxSize" /></div>
+        </div>
+        <div class="field">
+            <label>Minimum level</label>
+            <select class="input" @bind="_minLevel">
+                @foreach (var l in Enum.GetValues<LogLevel>()) { <option value="@l">@l</option> }
+            </select>
+        </div>
+        @if (_error is not null)
+        {
+            <div class="badge danger">@_error</div>
+        }
+    </ChildContent>
+    <Footer>
+        <button class="btn ghost" @onclick="() => _showCreate = false">Cancel</button>
+        <button class="btn primary" @onclick="CreateApp">Create app</button>
+    </Footer>
+</Modal>
 
 @code {
     private IReadOnlyList<Logrr.Storage.Control.AppRecord> _apps = [];
     private readonly Dictionary<string, Logrr.Contracts.AppStatsDto> _stats = new();
+    private System.Threading.Timer? _timer;
+
+    private bool _showCreate;
+    private string _id = "", _name = "";
+    private int _retention = 14, _maxSize = 2048;
+    private LogLevel _minLevel = LogLevel.Verbose;
+    private string? _error;
 
     protected override void OnInitialized()
+    {
+        Load();
+        _timer = new System.Threading.Timer(_ => InvokeAsync(() => { Load(); StateHasChanged(); }),
+            null, TimeSpan.FromSeconds(8), TimeSpan.FromSeconds(8));
+    }
+
+    private void Load()
     {
         _apps = Apps.List();
         foreach (var app in _apps)
@@ -52,6 +123,51 @@
         }
     }
 
+    private void CreateApp()
+    {
+        _error = null;
+        if (!System.Text.RegularExpressions.Regex.IsMatch(_id, "^[a-z0-9-]{3,32}$"))
+        {
+            _error = "id must match [a-z0-9-]{3,32}";
+            return;
+        }
+        if (Apps.Get(_id) is not null) { _error = "an app with that id already exists"; return; }
+
+        Apps.Create(new Logrr.Storage.Control.AppRecord
+        {
+            Id = _id, Name = string.IsNullOrWhiteSpace(_name) ? _id : _name,
+            RetentionDays = _retention, MaxSizeMb = _maxSize, MinimumLevel = _minLevel,
+            IsEnabled = true, CreatedUtc = DateTimeOffset.UtcNow,
+        });
+        _showCreate = false;
+        _id = ""; _name = "";
+        Load();
+    }
+
+    private List<double> Series(Logrr.Contracts.AppStatsDto? s)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var series = new List<double>(24);
+        for (var i = 23; i >= 0; i--)
+        {
+            var key = now.AddHours(-i).UtcDateTime.ToString("yyyy-MM-ddTHH:00Z");
+            series.Add(s?.CountByHour.GetValueOrDefault(key) ?? 0);
+        }
+        return series;
+    }
+
+    private static string LastSeen(Logrr.Contracts.AppStatsDto? s)
+    {
+        if (s?.LastEventUtc is not { } t) { return "—"; }
+        var ago = DateTimeOffset.UtcNow - t;
+        return ago.TotalMinutes < 1 ? "just now"
+            : ago.TotalHours < 1 ? $"{(int)ago.TotalMinutes}m ago"
+            : ago.TotalDays < 1 ? $"{(int)ago.TotalHours}h ago"
+            : $"{(int)ago.TotalDays}d ago";
+    }
+
+    private static string Format(long n) => n >= 1_000_000 ? $"{n / 1_000_000.0:0.#}M" : n >= 1000 ? $"{n / 1000.0:0.#}k" : n.ToString();
+
     private static string FormatBytes(long bytes) => bytes switch
     {
         >= 1 << 30 => $"{bytes / (double)(1 << 30):0.0} GB",
@@ -59,4 +175,6 @@
         >= 1 << 10 => $"{bytes / (double)(1 << 10):0.0} KB",
         _ => $"{bytes} B",
     };
+
+    public void Dispose() => _timer?.Dispose();
 }

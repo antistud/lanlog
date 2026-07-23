@@ -1,0 +1,26 @@
+@if (Href is not null)
+{
+    <a class="tile @(Alert ? "alert" : "")" href="@Href">@Inner</a>
+}
+else
+{
+    <div class="tile @(Alert ? "alert" : "")">@Inner</div>
+}
+
+@code {
+    [Parameter] public string Label { get; set; } = "";
+    [Parameter] public string Value { get; set; } = "";
+    [Parameter] public string? Foot { get; set; }
+    [Parameter] public string? Href { get; set; }
+    [Parameter] public bool Alert { get; set; }
+    [Parameter] public bool Small { get; set; }
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+
+    private RenderFragment Inner => __builder =>
+    {
+        <div class="k">@Label</div>
+        <div class="v @(Small ? "sm" : "")">@Value</div>
+        @if (ChildContent is not null) { @ChildContent }
+        @if (Foot is not null) { <div class="foot">@Foot</div> }
+    };
+}

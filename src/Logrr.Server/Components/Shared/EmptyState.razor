@@ -1,0 +1,14 @@
+<div class="empty">
+    <div class="glyph">@Glyph</div>
+    <h3>@Title</h3>
+    @if (ChildContent is not null)
+    {
+        <div class="hint">@ChildContent</div>
+    }
+</div>
+
+@code {
+    [Parameter] public string Glyph { get; set; } = "◍";
+    [Parameter] public string Title { get; set; } = "Nothing here yet";
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+}
