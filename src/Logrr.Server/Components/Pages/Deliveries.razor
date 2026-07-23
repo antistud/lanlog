@@ -1,0 +1,119 @@
+@page "/deliveries"
+@attribute [Authorize(Roles = "Admin")]
+@rendermode InteractiveServer
+@inject Logrr.Notify.DeliveryStore Store
+@inject Logrr.Notify.DestinationStore Destinations
+
+<PageTitle>Deliveries — Logrr</PageTitle>
+
+<div class="page-head">
+    <div><h1>Deliveries</h1><div class="sub">Outbound webhook queue — durable, with retry and dead-letter.</div></div>
+</div>
+
+<div class="grid cols-4 mb-4">
+    <StatTile Label="Pending" Value="@_pending.ToString()" />
+    <StatTile Label="Delivered" Value="@_delivered.ToString()" />
+    <StatTile Label="Failed" Value="@_failed.ToString()" />
+    <StatTile Label="Dead-lettered" Value="@_dead.ToString()" Alert="_dead > 0" />
+</div>
+
+<div class="tabs">
+    @foreach (var s in Filters)
+    {
+        <a class="tab @(_status == s.Value ? "active" : "")" @onclick="() => SetFilter(s.Value)" style="cursor:pointer">@s.Label</a>
+    }
+</div>
+
+<div class="table-wrap">
+    <table class="data">
+        <thead>
+            <tr><th>Status</th><th>Destination</th><th>Source</th><th>Created</th><th>Attempt</th><th>Response</th><th>Ticket</th><th></th></tr>
+        </thead>
+        <tbody>
+            @if (_rows.Count == 0)
+            {
+                <tr><td colspan="8"><div class="empty" style="padding:var(--sp-6)"><div class="glyph">✉</div><div class="muted">No deliveries.</div></div></td></tr>
+            }
+            @foreach (var d in _rows)
+            {
+                <tr class="clickable" @onclick="() => Toggle(d.Id)">
+                    <td>@StatusBadge(d.Status)</td>
+                    <td>@(_names.GetValueOrDefault(d.DestinationId) ?? d.DestinationId)</td>
+                    <td class="meta">@d.Source</td>
+                    <td class="meta nowrap">@d.CreatedUtc.ToLocalTime().ToString("MM-dd HH:mm:ss")</td>
+                    <td class="num">@d.Attempt</td>
+                    <td class="num">@(d.ResponseStatus?.ToString() ?? "—")</td>
+                    <td>@if (d.TicketUrl is not null) { <a href="@d.TicketUrl" target="_blank">@(d.TicketId ?? "link")</a> } else { <span class="muted-2">—</span> }</td>
+                    <td class="text-right">
+                        @if (d.Status is Logrr.Notify.DeliveryStatus.Failed or Logrr.Notify.DeliveryStatus.DeadLettered)
+                        {
+                            <button class="btn sm" @onclick:stopPropagation="true" @onclick="() => Retry(d.Id)">Retry</button>
+                        }
+                    </td>
+                </tr>
+                @if (_expanded == d.Id)
+                {
+                    <tr><td colspan="8" style="background:var(--surface-2)">
+                        <div class="grid" style="gap:var(--sp-3)">
+                            @if (d.Error is not null) { <div class="badge danger">@d.Error</div> }
+                            <div><div class="muted-2" style="font-size:var(--fs-xs); margin-bottom:4px">REQUEST BODY</div><pre class="code">@(d.RequestBody ?? "—")</pre></div>
+                            @if (d.ResponseSnippet is not null) { <div><div class="muted-2" style="font-size:var(--fs-xs); margin-bottom:4px">RESPONSE</div><pre class="code">@d.ResponseSnippet</pre></div> }
+                        </div>
+                    </td></tr>
+                }
+            }
+        </tbody>
+    </table>
+</div>
+
+@code {
+    private static readonly (string Label, string Value)[] Filters =
+    [
+        ("All", ""), ("Pending", "Pending"), ("Delivered", "Delivered"),
+        ("Failed", "Failed"), ("Dead-lettered", "DeadLettered"),
+    ];
+
+    private string _status = "";
+    private string? _expanded;
+    private IReadOnlyList<Logrr.Notify.Delivery> _rows = [];
+    private Dictionary<string, string> _names = new();
+    private int _pending, _delivered, _failed, _dead;
+
+    protected override void OnInitialized()
+    {
+        _names = Destinations.List().ToDictionary(d => d.Id, d => d.Name);
+        Load();
+    }
+
+    private void Load()
+    {
+        Logrr.Notify.DeliveryStatus? s = Enum.TryParse<Logrr.Notify.DeliveryStatus>(_status, out var parsed) ? parsed : null;
+        _rows = Store.Query(s, null, null, null, 300);
+        _pending = Store.CountByStatus(Logrr.Notify.DeliveryStatus.Pending);
+        _delivered = Store.CountByStatus(Logrr.Notify.DeliveryStatus.Delivered);
+        _failed = Store.CountByStatus(Logrr.Notify.DeliveryStatus.Failed);
+        _dead = Store.CountByStatus(Logrr.Notify.DeliveryStatus.DeadLettered);
+    }
+
+    private void SetFilter(string s) { _status = s; Load(); }
+    private void Toggle(string id) => _expanded = _expanded == id ? null : id;
+
+    private void Retry(string id)
+    {
+        var d = Store.Get(id);
+        if (d is not null) { Store.Update(d with { Status = Logrr.Notify.DeliveryStatus.Pending, NextAttemptUtc = DateTimeOffset.UtcNow }); }
+        Load();
+    }
+
+    private static RenderFragment StatusBadge(Logrr.Notify.DeliveryStatus s) => __builder =>
+    {
+        var (cls, txt) = s switch
+        {
+            Logrr.Notify.DeliveryStatus.Delivered => ("good", "delivered"),
+            Logrr.Notify.DeliveryStatus.Pending => ("accent", "pending"),
+            Logrr.Notify.DeliveryStatus.Failed => ("warn", "failed"),
+            _ => ("danger", "dead-letter"),
+        };
+        <span class="badge @cls">@txt</span>
+    };
+}

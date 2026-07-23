@@ -4,6 +4,7 @@ using Logrr.Storage;
 using Logrr.Storage.Control;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.Mvc;
 
 namespace Logrr.Server.Auth;
 
@@ -12,7 +13,7 @@ public static class AuthEndpoints
     public static void MapAuthEndpoints(this IEndpointRouteBuilder app)
     {
         app.MapPost("/auth/login", async (HttpContext http, UserStore users, StoragePaths paths,
-            string username, string password, string? returnUrl) =>
+            [FromForm] string username, [FromForm] string password, [FromForm] string? returnUrl) =>
         {
             var user = users.GetByUsername(username);
             if (user?.PasswordHash is null || user.PasswordSalt is null ||

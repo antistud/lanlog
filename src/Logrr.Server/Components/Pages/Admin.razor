@@ -1,0 +1,145 @@
+@page "/admin"
+@attribute [Authorize(Roles = "Admin")]
+@rendermode InteractiveServer
+@inject Logrr.Storage.IngestPipeline Ingest
+@inject Logrr.Realtime.RealtimeBroker Broker
+@inject Logrr.Notify.DeliveryStore Deliveries
+@inject Logrr.Storage.StoragePaths Paths
+@inject Logrr.Storage.Control.UserStore Users
+@inject Microsoft.Extensions.Options.IOptions<Logrr.Server.ServerOptions> Options
+
+<PageTitle>Admin — Logrr</PageTitle>
+
+<div class="page-head">
+    <div><h1>Admin</h1><div class="sub">Health, users, and the server's own diagnostics.</div></div>
+    <button class="btn ghost" @onclick="Refresh">↻ Refresh</button>
+</div>
+
+<div class="grid cols-4 mb-4">
+    <StatTile Label="Ingest queue" Value="@_queue.ToString()" Small="true" />
+    <StatTile Label="Dropped" Value="@_dropped.ToString()" Small="true" Alert="_dropped > 0" />
+    <StatTile Label="Disk free" Value="@($"{_diskMb:N0} MB")" Small="true" Alert="_diskMb < Options.Value.MinFreeDiskMb" />
+    <StatTile Label="Subscriptions" Value="@_subs.ToString()" Small="true" />
+    <StatTile Label="Pending deliveries" Value="@_pending.ToString()" Small="true" />
+    <StatTile Label="Dead-lettered" Value="@_dead.ToString()" Small="true" Alert="_dead > 0" />
+</div>
+
+<div class="card">
+    <div class="card-head"><h3>Users</h3><button class="btn primary sm" @onclick="() => _showUser = true">＋ New user</button></div>
+    <div class="table-wrap" style="border:none">
+        <table class="data">
+            <thead><tr><th>Username</th><th>Role</th><th>Created</th><th></th></tr></thead>
+            <tbody>
+                @foreach (var u in _users)
+                {
+                    <tr>
+                        <td><strong>@u.Username</strong>@if (u.MustChangePassword) { <span class="badge warn" style="margin-left:6px">must change password</span> }</td>
+                        <td>
+                            @if (u.Role == Logrr.Storage.Control.UserRole.Admin) { <span class="badge accent">Admin</span> }
+                            else { <span class="badge">User</span> }
+                        </td>
+                        <td class="meta">@u.CreatedUtc.ToLocalTime().ToString("yyyy-MM-dd")</td>
+                        <td></td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-head"><h3>Internal log</h3><span class="meta">@_logName</span></div>
+    <pre class="code" style="max-height:340px; overflow:auto">@(_log.Length == 0 ? "(empty)" : _log)</pre>
+</div>
+
+<Modal @bind-Open="_showUser" Title="New user">
+    <ChildContent>
+        <div class="field"><label>Username</label><input class="input" @bind="_uName" /></div>
+        <div class="field"><label>Password</label><input class="input" type="password" @bind="_uPass" /></div>
+        <div class="field">
+            <label>Role</label>
+            <select class="input" @bind="_uRole">
+                <option value="User">User</option>
+                <option value="Admin">Admin</option>
+            </select>
+        </div>
+        @if (_uErr is not null) { <div class="badge danger">@_uErr</div> }
+    </ChildContent>
+    <Footer>
+        <button class="btn ghost" @onclick="() => _showUser = false">Cancel</button>
+        <button class="btn primary" @onclick="CreateUser">Create user</button>
+    </Footer>
+</Modal>
+
+@code {
+    private int _queue, _subs, _pending, _dead;
+    private long _dropped, _diskMb;
+    private IReadOnlyList<Logrr.Storage.Control.UserRecord> _users = [];
+    private string _log = "", _logName = "";
+
+    private bool _showUser;
+    private string _uName = "", _uPass = "", _uRole = "User";
+    private string? _uErr;
+
+    protected override void OnInitialized() => Refresh();
+
+    private void Refresh()
+    {
+        _queue = Ingest.QueueDepth;
+        _dropped = Ingest.DroppedTotal;
+        _subs = Broker.ActiveCount;
+        _pending = Deliveries.CountByStatus(Logrr.Notify.DeliveryStatus.Pending);
+        _dead = Deliveries.CountByStatus(Logrr.Notify.DeliveryStatus.DeadLettered);
+        _diskMb = DiskFreeMb();
+        _users = Users.List();
+        LoadLog();
+    }
+
+    private long DiskFreeMb()
+    {
+        try
+        {
+            var root = Path.GetPathRoot(Path.GetFullPath(Paths.DataRoot));
+            return string.IsNullOrEmpty(root) ? 0 : new DriveInfo(root).AvailableFreeSpace / (1024 * 1024);
+        }
+        catch { return 0; }
+    }
+
+    private void LoadLog()
+    {
+        try
+        {
+            var file = Directory.EnumerateFiles(Paths.DataRoot, "logrr-internal*.log")
+                .OrderByDescending(File.GetLastWriteTimeUtc).FirstOrDefault();
+            if (file is null) { _log = ""; _logName = "no log file"; return; }
+            _logName = Path.GetFileName(file);
+            using var fs = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var sr = new StreamReader(fs);
+            var lines = sr.ReadToEnd().Split('\n');
+            _log = string.Join('\n', lines.TakeLast(120));
+        }
+        catch (IOException) { _log = "(could not read log)"; }
+    }
+
+    private void CreateUser()
+    {
+        _uErr = null;
+        if (string.IsNullOrWhiteSpace(_uName) || string.IsNullOrWhiteSpace(_uPass)) { _uErr = "username and password required"; return; }
+        if (Users.GetByUsername(_uName) is not null) { _uErr = "username already exists"; return; }
+
+        var (hash, salt) = Logrr.Server.Security.PasswordHasher.Create(_uPass);
+        Users.Create(new Logrr.Storage.Control.UserRecord
+        {
+            Id = Guid.NewGuid().ToString("N"),
+            Username = _uName,
+            PasswordHash = hash,
+            PasswordSalt = salt,
+            Role = _uRole == "Admin" ? Logrr.Storage.Control.UserRole.Admin : Logrr.Storage.Control.UserRole.User,
+            MustChangePassword = false,
+            CreatedUtc = DateTimeOffset.UtcNow,
+        });
+        _showUser = false;
+        _uName = ""; _uPass = "";
+        Refresh();
+    }
+}

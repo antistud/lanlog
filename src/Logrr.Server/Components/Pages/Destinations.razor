@@ -1,0 +1,172 @@
+@page "/destinations"
+@attribute [Authorize(Roles = "Admin")]
+@rendermode InteractiveServer
+@inject Logrr.Notify.DestinationStore Store
+@inject Logrr.Notify.ManualTicketService Manual
+@inject Logrr.Notify.ISecretProtector Protector
+
+<PageTitle>Destinations — Logrr</PageTitle>
+
+<div class="page-head">
+    <div><h1>Destinations</h1><div class="sub">Where tickets go. One protocol out: JSON over HTTP.</div></div>
+    <button class="btn primary" @onclick="OpenCreate">＋ New destination</button>
+</div>
+
+@if (_items.Count == 0)
+{
+    <div class="card"><EmptyState Glyph="➤" Title="No destinations yet">Add a webhook target — Gitea, GitHub, Jira, Slack, Teams, or a generic endpoint.</EmptyState></div>
+}
+else
+{
+    <div class="grid cols-2">
+        @foreach (var d in _items)
+        {
+            <div class="tile">
+                <div class="flex between items-center">
+                    <div><div style="font-weight:600; font-size:var(--fs-lg)">@d.Name</div><div class="mono-sm truncate" style="max-width:280px">@d.Url</div></div>
+                    <div class="flex gap-2">
+                        @if (d.CircuitOpenUntilUtc is { } c && c > DateTimeOffset.UtcNow) { <span class="badge danger">circuit open</span> }
+                        else if (!d.IsEnabled) { <span class="badge">disabled</span> }
+                        else { <span class="badge good">enabled</span> }
+                    </div>
+                </div>
+                <div class="flex between items-center mt-2">
+                    <span class="meta">@d.Method · @(d.AuthMode) auth@(d.ConsecutiveFailures > 0 ? $" · {d.ConsecutiveFailures} recent failures" : "")</span>
+                    <div class="flex gap-2">
+                        <button class="btn sm" @onclick="() => Test(d.Id)">Test</button>
+                        <button class="btn danger sm" @onclick="() => Delete(d.Id)">Delete</button>
+                    </div>
+                </div>
+                @if (_testMsg.TryGetValue(d.Id, out var msg)) { <div class="badge @(_testOk.GetValueOrDefault(d.Id) ? "good" : "danger") mt-2">@msg</div> }
+            </div>
+        }
+    </div>
+}
+
+<Modal @bind-Open="_show" Title="New destination" Wide="true">
+    <ChildContent>
+        <div class="field">
+            <label>Start from a preset</label>
+            <select class="input" @onchange="ApplyPreset">
+                <option value="">— none —</option>
+                @foreach (var p in Logrr.Notify.DestinationPresets.All) { <option value="@p.Key">@p.Name</option> }
+            </select>
+        </div>
+        <div class="grid cols-2">
+            <div class="field"><label>Name</label><input class="input" @bind="_name" /></div>
+            <div class="field">
+                <label>Auth</label>
+                <select class="input" @bind="_authMode">
+                    @foreach (var a in Enum.GetValues<Logrr.Notify.AuthMode>()) { <option value="@a">@a</option> }
+                </select>
+            </div>
+        </div>
+        <div class="field"><label>URL</label><input class="input mono" @bind="_url" placeholder="@_urlHint" /></div>
+        @if (_authMode != Logrr.Notify.AuthMode.None)
+        {
+            <div class="field"><label>Auth secret <span class="muted-2">(write-only, encrypted at rest)</span></label><input class="input" type="password" @bind="_secret" /></div>
+        }
+        <div class="grid cols-2">
+            <div class="field"><label>Ticket id path</label><input class="input mono" @bind="_idPath" placeholder="$.number" /></div>
+            <div class="field"><label>Ticket url path</label><input class="input mono" @bind="_urlPath" placeholder="$.html_url" /></div>
+        </div>
+        <div class="field">
+            <label>Body template</label>
+            <textarea class="input" @bind="_body" @bind:event="oninput" rows="8"></textarea>
+        </div>
+        <div class="field">
+            <label>Live preview <span class="muted-2">(rendered against a sample event)</span></label>
+            @{ var preview = Preview(); }
+            <pre class="code" style="border-color:@(preview.Ok ? "var(--border)" : "var(--danger)")">@preview.Body</pre>
+            @if (!preview.Ok) { <span class="hint" style="color:var(--danger)">@preview.Error</span> }
+            else { <span class="hint" style="color:var(--good)">✓ valid JSON</span> }
+        </div>
+    </ChildContent>
+    <Footer>
+        <button class="btn ghost" @onclick="() => _show = false">Cancel</button>
+        <button class="btn primary" @onclick="Create">Create destination</button>
+    </Footer>
+</Modal>
+
+@code {
+    private IReadOnlyList<Logrr.Notify.Destination> _items = [];
+    private readonly Dictionary<string, string> _testMsg = new();
+    private readonly Dictionary<string, bool> _testOk = new();
+
+    private bool _show;
+    private string _name = "", _url = "", _secret = "", _idPath = "", _urlPath = "", _urlHint = "";
+    private string _body = "{\n  \"text\": \"{{event.level}}: {{event.message}}\"\n}";
+    private Logrr.Notify.AuthMode _authMode = Logrr.Notify.AuthMode.None;
+
+    protected override void OnInitialized() => Load();
+    private void Load() => _items = Store.List();
+
+    private void OpenCreate()
+    {
+        _name = ""; _url = ""; _secret = ""; _idPath = ""; _urlPath = ""; _authMode = Logrr.Notify.AuthMode.None;
+        _show = true;
+    }
+
+    private void ApplyPreset(ChangeEventArgs e)
+    {
+        var preset = Logrr.Notify.DestinationPresets.All.FirstOrDefault(p => p.Key == (string?)e.Value);
+        if (preset is null) { return; }
+        _name = preset.Name;
+        _body = preset.BodyTemplate;
+        _idPath = preset.TicketIdPath ?? "";
+        _urlPath = preset.TicketUrlPath ?? "";
+        _urlHint = preset.UrlHint;
+    }
+
+    private (string Body, bool Ok, string? Error) Preview()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var ev = new Logrr.Core.LogEvent
+        {
+            Timestamp = now, Level = LogLevel.Error,
+            Template = "Payment {Amount} failed for {UserId}",
+            Message = "Payment 49.99 failed for 1042",
+            Exception = "System.TimeoutException: The operation timed out\n  at Billing.Charge()",
+            EventType = 123456, Source = "Billing.Processor",
+            Properties = new Dictionary<string, object?> { ["Amount"] = 49.99, ["UserId"] = 1042L, ["TenantId"] = 7L },
+        };
+        var ctx = new Logrr.Notify.WebhookContext
+        {
+            Event = ev, EventId = "20260723:4921", AppId = "billing", AppName = "Billing",
+            Occurrence = new Logrr.Notify.Occurrence { RuleId = "r", DedupeKey = "123456", Count = 42, FirstSeenUtc = now.AddMinutes(-30), LastSeenUtc = now },
+            BaseUrl = "https://logrr.internal",
+        };
+        var isJson = _body.TrimStart().StartsWith('{') || _body.TrimStart().StartsWith('[');
+        var r = Logrr.Notify.WebhookRenderer.Render(_body, ctx, isJson);
+        return (r.Body, r.Ok, r.Error);
+    }
+
+    private void Create()
+    {
+        Store.Create(new Logrr.Notify.Destination
+        {
+            Id = Guid.NewGuid().ToString("N"),
+            Name = string.IsNullOrWhiteSpace(_name) ? "destination" : _name,
+            Url = _url,
+            ContentType = "application/json",
+            AuthMode = _authMode,
+            AuthSecret = string.IsNullOrEmpty(_secret) ? null : Protector.Protect(_secret),
+            BodyTemplate = _body,
+            TicketIdPath = string.IsNullOrWhiteSpace(_idPath) ? null : _idPath,
+            TicketUrlPath = string.IsNullOrWhiteSpace(_urlPath) ? null : _urlPath,
+            IsEnabled = true,
+            CreatedUtc = DateTimeOffset.UtcNow,
+        });
+        _show = false;
+        Load();
+    }
+
+    private void Test(string id)
+    {
+        var r = Manual.Test(id);
+        _testOk[id] = r.Error is null;
+        _testMsg[id] = r.Error ?? "Test delivery queued.";
+    }
+
+    private void Delete(string id) { Store.Delete(id); Load(); }
+}

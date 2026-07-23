@@ -1,0 +1,171 @@
+@page "/rules"
+@attribute [Authorize(Roles = "Admin")]
+@rendermode InteractiveServer
+@inject Logrr.Notify.RuleStore RuleSvc
+@inject Logrr.Notify.DestinationStore Destinations
+@inject Logrr.Notify.OccurrenceStore Occurrences
+@inject Logrr.Notify.DeliveryStore Deliveries
+@inject Logrr.Storage.Control.AppStore Apps
+
+<PageTitle>Rules — Logrr</PageTitle>
+
+<div class="page-head">
+    <div><h1>Rules</h1><div class="sub">Turn matching events into tickets — with dedupe, thresholds, and cooldown.</div></div>
+    <button class="btn primary" @onclick="OpenCreate" disabled="@(_destinations.Count == 0)">＋ New rule</button>
+</div>
+
+@if (_destinations.Count == 0)
+{
+    <div class="card"><EmptyState Glyph="❃" Title="Add a destination first">Rules deliver to a <a href="/destinations">destination</a>. Create one to get started.</EmptyState></div>
+}
+else if (_rules.Count == 0)
+{
+    <div class="card"><EmptyState Glyph="❃" Title="No rules yet">A rule watches events and raises tickets. Start in dry-run to see what it would send.</EmptyState></div>
+}
+else
+{
+    <div class="table-wrap">
+        <table class="data">
+            <thead><tr><th>Rule</th><th>Scope</th><th>Trigger</th><th>Fires (1h)</th><th>Last fired</th><th>Status</th><th></th></tr></thead>
+            <tbody>
+                @foreach (var r in _rules)
+                {
+                    <tr>
+                        <td><strong>@r.Name</strong>@if (r.IsDryRun) { <span class="badge" style="margin-left:6px">dry-run</span> }<div class="mono-sm">@(r.Filter ?? "level ≥ " + r.MinimumLevel)</div></td>
+                        <td class="meta">@(r.AppId ?? "all apps")</td>
+                        <td class="meta">@(r.TriggerType == Logrr.Notify.TriggerType.Threshold ? $"{r.ThresholdCount} in {r.ThresholdWindowMinutes}m" : "every match")</td>
+                        <td class="num">@_fires.GetValueOrDefault(r.Id)</td>
+                        <td class="meta nowrap">@(r.LastFiredUtc?.ToLocalTime().ToString("MM-dd HH:mm") ?? "—")</td>
+                        <td>
+                            @if (!r.IsEnabled) { <span class="badge danger" title="@r.AutoDisabledReason">disabled</span> }
+                            else { <span class="badge good">enabled</span> }
+                        </td>
+                        <td class="text-right nowrap">
+                            @if (r.IsEnabled) { <button class="btn ghost sm" @onclick="() => Toggle(r.Id, false)">Disable</button> }
+                            else { <button class="btn ghost sm" @onclick="() => Toggle(r.Id, true)">Enable</button> }
+                            <button class="btn ghost sm" @onclick="() => ResetCooldown(r.Id)">Reset</button>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+<Modal @bind-Open="_show" Title="New rule" Wide="true">
+    <ChildContent>
+        <div class="grid cols-2">
+            <div class="field"><label>Name</label><input class="input" @bind="_name" placeholder="Billing errors" /></div>
+            <div class="field">
+                <label>App</label>
+                <select class="input" @bind="_appId">
+                    <option value="">All apps</option>
+                    @foreach (var a in _apps) { <option value="@a.Id">@a.Name</option> }
+                </select>
+            </div>
+        </div>
+        <div class="field">
+            <label>Filter expression <span class="muted-2">(optional)</span></label>
+            <input class="input mono" @bind="_filter" placeholder="Exception is not null and Source like 'Payments%'" />
+        </div>
+        <div class="grid cols-2">
+            <div class="field">
+                <label>Minimum level</label>
+                <select class="input" @bind="_minLevel">@foreach (var l in Enum.GetValues<LogLevel>()) { <option value="@l">@l</option> }</select>
+            </div>
+            <div class="field">
+                <label>Trigger</label>
+                <select class="input" @bind="_trigger">
+                    <option value="EveryMatch">Every match</option>
+                    <option value="Threshold">Threshold</option>
+                </select>
+            </div>
+        </div>
+        @if (_trigger == "Threshold")
+        {
+            <div class="grid cols-2">
+                <div class="field"><label>Threshold count</label><input class="input" type="number" @bind="_thresholdCount" /></div>
+                <div class="field"><label>Window (minutes)</label><input class="input" type="number" @bind="_thresholdWindow" /></div>
+            </div>
+        }
+        <div class="grid cols-2">
+            <div class="field">
+                <label>Destination</label>
+                <select class="input" @bind="_destId">@foreach (var d in _destinations) { <option value="@d.Id">@d.Name</option> }</select>
+            </div>
+            <div class="field"><label>Cooldown (minutes)</label><input class="input" type="number" @bind="_cooldown" /></div>
+        </div>
+        <div class="grid cols-2">
+            <div class="field"><label>Dedupe key</label><input class="input mono" @bind="_dedupe" /></div>
+            <div class="field"><label>Max fires / hour</label><input class="input" type="number" @bind="_maxFires" /></div>
+        </div>
+        <div class="field">
+            <label class="flex gap-2 items-center" style="cursor:pointer; font-weight:400">
+                <input type="checkbox" @bind="_dryRun" /> Start in dry-run (record what it would send, deliver nothing)
+            </label>
+        </div>
+    </ChildContent>
+    <Footer>
+        <button class="btn ghost" @onclick="() => _show = false">Cancel</button>
+        <button class="btn primary" @onclick="Create">Create rule</button>
+    </Footer>
+</Modal>
+
+@code {
+    private IReadOnlyList<Logrr.Notify.Rule> _rules = [];
+    private IReadOnlyList<Logrr.Notify.Destination> _destinations = [];
+    private IReadOnlyList<Logrr.Storage.Control.AppRecord> _apps = [];
+    private readonly Dictionary<string, int> _fires = new();
+
+    private bool _show;
+    private string _name = "", _appId = "", _filter = "", _destId = "", _dedupe = "{{event.eventType}}", _trigger = "EveryMatch";
+    private LogLevel _minLevel = LogLevel.Error;
+    private int _cooldown = 60, _maxFires = 20, _thresholdCount = 5, _thresholdWindow = 10;
+    private bool _dryRun = true;
+
+    protected override void OnInitialized() => Load();
+
+    private void Load()
+    {
+        _rules = RuleSvc.List();
+        _destinations = Destinations.List();
+        _apps = Apps.List();
+        _fires.Clear();
+        var since = DateTimeOffset.UtcNow.AddHours(-1);
+        foreach (var r in _rules) { _fires[r.Id] = Deliveries.CountForRuleSince(r.Id, since); }
+    }
+
+    private void OpenCreate()
+    {
+        _destId = _destinations.Count > 0 ? _destinations[0].Id : "";
+        _show = true;
+    }
+
+    private void Create()
+    {
+        RuleSvc.Create(new Logrr.Notify.Rule
+        {
+            Id = Guid.NewGuid().ToString("N"),
+            Name = string.IsNullOrWhiteSpace(_name) ? "rule" : _name,
+            AppId = string.IsNullOrWhiteSpace(_appId) ? null : _appId,
+            Filter = string.IsNullOrWhiteSpace(_filter) ? null : _filter,
+            MinimumLevel = _minLevel,
+            TriggerType = _trigger == "Threshold" ? Logrr.Notify.TriggerType.Threshold : Logrr.Notify.TriggerType.EveryMatch,
+            ThresholdCount = _thresholdCount,
+            ThresholdWindowMinutes = _thresholdWindow,
+            DedupeKeyTemplate = string.IsNullOrWhiteSpace(_dedupe) ? "{{event.eventType}}" : _dedupe,
+            CooldownMinutes = _cooldown,
+            DestinationId = _destId,
+            MaxFiresPerHour = _maxFires,
+            IsDryRun = _dryRun,
+            IsEnabled = true,
+            CreatedUtc = DateTimeOffset.UtcNow,
+        });
+        _show = false;
+        _name = ""; _filter = "";
+        Load();
+    }
+
+    private void Toggle(string id, bool enabled) { RuleSvc.SetEnabled(id, enabled); Load(); }
+    private void ResetCooldown(string id) { Occurrences.ResetForRule(id); Load(); }
+}

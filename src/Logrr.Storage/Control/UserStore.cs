@@ -28,6 +28,20 @@ public sealed class UserStore(ControlDatabase db)
         return reader.Read() ? Map(reader) : null;
     }
 
+    public IReadOnlyList<UserRecord> List()
+    {
+        using var conn = db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT * FROM users ORDER BY username;";
+        using var reader = cmd.ExecuteReader();
+        var users = new List<UserRecord>();
+        while (reader.Read())
+        {
+            users.Add(Map(reader));
+        }
+        return users;
+    }
+
     public bool AnyExist()
     {
         using var conn = db.Open();
