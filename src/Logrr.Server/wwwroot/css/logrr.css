@@ -196,7 +196,7 @@ code, pre, .mono { font-family: var(--font-mono); font-size: .8125em; }
 }
 .topbar .crumbs { display: flex; align-items: center; gap: var(--sp-2); color: var(--ink-2); font-size: var(--fs-md); }
 .topbar .crumbs .sep { color: var(--ink-3); }
-.content { padding: var(--sp-6) var(--sp-5); max-width: 1180px; width: 100%; }
+.content { padding: var(--sp-6) var(--sp-5); width: 100%; }
 
 /* ---- Page header ------------------------------------------------------- */
 .page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--sp-4); margin-bottom: var(--sp-5); }
