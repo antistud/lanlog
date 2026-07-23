@@ -194,6 +194,7 @@ app.UseAntiforgery();
 
 app.MapIngestEndpoints(cfgRoot.GetValue("Ingest:MaxRequestBytes", 10_485_760L));
 app.MapQueryEndpoints();
+app.MapStreamEndpoints();
 app.MapAdminEndpoints();
 app.MapAuthEndpoints();
 app.MapHub<TailHub>("/hubs/tail");
