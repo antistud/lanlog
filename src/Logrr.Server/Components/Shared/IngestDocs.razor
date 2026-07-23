@@ -43,7 +43,12 @@
         }
         else if (_tab == "Serilog")
         {
-            <span class="hint"><code>Serilog.Sinks.Seq</code> is public — this one works with no extra setup. Add <code>builder.Host.UseSerilog()</code> so your <code>ILogger&lt;T&gt;</code> logs flow through too.</span>
+            <span class="hint">
+                Both packages are public (nuget.org). <code>Serilog.AspNetCore</code> provides
+                <code>AddSerilog</code> and routes your <code>ILogger&lt;T&gt;</code> logs through Serilog;
+                <code>Serilog.Sinks.Seq</code> is the sink. Logrr accepts the <code>apiKey</code> as its
+                <code>X-Seq-ApiKey</code> header.
+            </span>
         }
     </div>
 </div>
@@ -69,10 +74,12 @@ builder.Logging.AddLogrr(
     ""{Token}"");",
 
         "Serilog" =>
-$@"// dotnet add package Serilog.Sinks.Seq
-Log.Logger = new LoggerConfiguration()
-    .WriteTo.Seq(""{Endpoint}"", apiKey: ""{Token}"")
-    .CreateLogger();",
+$@"// dotnet add package Serilog.AspNetCore
+// dotnet add package Serilog.Sinks.Seq
+using Serilog;
+
+builder.Services.AddSerilog(cfg => cfg
+    .WriteTo.Seq(""{Endpoint}"", apiKey: ""{Token}""));",
 
         _ =>
 $@"curl -X POST {Endpoint}/api/events/raw \
