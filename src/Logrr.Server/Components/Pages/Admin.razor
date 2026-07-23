@@ -41,7 +41,13 @@
                             else { <span class="badge">User</span> }
                         </td>
                         <td class="meta">@u.CreatedUtc.ToLocalTime().ToString("yyyy-MM-dd")</td>
-                        <td></td>
+                        <td class="text-right nowrap">
+                            <button class="btn ghost sm" @onclick="() => OpenReset(u)">Reset password</button>
+                            @if (u.Username != _currentUser)
+                            {
+                                <button class="btn danger sm" @onclick="() => DeleteUser(u.Id)">Delete</button>
+                            }
+                        </td>
                     </tr>
                 }
             </tbody>
@@ -73,6 +79,21 @@
     </Footer>
 </Modal>
 
+<Modal @bind-Open="_showReset" Title="@($"Reset password — {_resetName}")">
+    <ChildContent>
+        <div class="field">
+            <label>New password</label>
+            <input class="input" type="password" @bind="_resetPass" />
+            <span class="hint">The user must change it again on their next sign-in.</span>
+        </div>
+        @if (_resetErr is not null) { <div class="badge danger">@_resetErr</div> }
+    </ChildContent>
+    <Footer>
+        <button class="btn ghost" @onclick="() => _showReset = false">Cancel</button>
+        <button class="btn primary" @onclick="ResetPassword">Reset password</button>
+    </Footer>
+</Modal>
+
 @code {
     private int _queue, _subs, _pending, _dead;
     private long _dropped, _diskMb;
@@ -83,7 +104,22 @@
     private string _uName = "", _uPass = "", _uRole = "User";
     private string? _uErr;
 
+    private bool _showReset;
+    private string _resetId = "", _resetName = "", _resetPass = "";
+    private string? _resetErr;
+    private string? _currentUser;
+
     private DateTimeOffset _lastLoad;
+
+    [CascadingParameter] private Task<AuthenticationState>? AuthState { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (AuthState is not null)
+        {
+            _currentUser = (await AuthState).User.Identity?.Name;
+        }
+    }
 
     protected override void OnInitialized()
     {
@@ -168,6 +204,28 @@
         });
         _showUser = false;
         _uName = ""; _uPass = "";
+        Refresh();
+    }
+
+    private void OpenReset(Logrr.Storage.Control.UserRecord u)
+    {
+        _resetId = u.Id; _resetName = u.Username; _resetPass = ""; _resetErr = null;
+        _showReset = true;
+    }
+
+    private void ResetPassword()
+    {
+        _resetErr = null;
+        if (_resetPass.Length < 8) { _resetErr = "password must be at least 8 characters"; return; }
+        var (hash, salt) = Logrr.Server.Security.PasswordHasher.Create(_resetPass);
+        Users.UpdatePassword(_resetId, hash, salt, mustChange: true);
+        _showReset = false;
+        Refresh();
+    }
+
+    private void DeleteUser(string id)
+    {
+        Users.Delete(id);
         Refresh();
     }
 }

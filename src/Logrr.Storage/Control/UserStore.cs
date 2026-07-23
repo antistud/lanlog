@@ -50,6 +50,15 @@ public sealed class UserStore(ControlDatabase db)
         return Convert.ToInt64(cmd.ExecuteScalar()) != 0;
     }
 
+    public void Delete(string id)
+    {
+        using var conn = db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "DELETE FROM users WHERE id = $id;";
+        cmd.Add("$id", id);
+        cmd.ExecuteNonQuery();
+    }
+
     public void UpdatePassword(string id, byte[] hash, byte[] salt, bool mustChange)
     {
         using var conn = db.Open();

@@ -3,6 +3,7 @@
 @rendermode InteractiveServer
 @inject Logrr.Storage.EventReader Reader
 @inject Logrr.Notify.TicketLinkStore TicketLinks
+@inject NavigationManager Nav
 
 <PageTitle>@AppId · search — Logrr</PageTitle>
 
@@ -86,6 +87,11 @@
     [Parameter] public string AppId { get; set; } = "";
     private static readonly string[] Levels = ["Verbose", "Debug", "Information", "Warning", "Error", "Fatal"];
 
+    [SupplyParameterFromQuery(Name = "q")] public string? QText { get; set; }
+    [SupplyParameterFromQuery(Name = "level")] public string? QLevel { get; set; }
+    [SupplyParameterFromQuery(Name = "range")] public string? QRange { get; set; }
+    [SupplyParameterFromQuery(Name = "filter")] public string? QFilter { get; set; }
+
     private string _text = "", _level = "", _filter = "", _range = "24h";
     private string? _cursor, _error;
     private int _partitions;
@@ -94,11 +100,30 @@
 
     protected override void OnInitialized()
     {
+        // Restore state from the shareable URL.
+        _text = QText ?? "";
+        _level = QLevel ?? "";
+        _range = string.IsNullOrEmpty(QRange) ? "24h" : QRange;
+        _filter = QFilter ?? "";
         _tickets = TicketLinks.TicketUrlsByEventType(AppId);
-        Run();
+        ResetAndFetch();
     }
 
+    // Called when a control changes: reflect the query in the URL (shareable) and re-run.
     private void Run()
+    {
+        var uri = Nav.GetUriWithQueryParameters(new Dictionary<string, object?>
+        {
+            ["q"] = string.IsNullOrWhiteSpace(_text) ? null : _text,
+            ["level"] = string.IsNullOrEmpty(_level) ? null : _level,
+            ["range"] = _range == "24h" ? null : _range,
+            ["filter"] = string.IsNullOrWhiteSpace(_filter) ? null : _filter,
+        });
+        Nav.NavigateTo(uri, forceLoad: false, replace: true);
+        ResetAndFetch();
+    }
+
+    private void ResetAndFetch()
     {
         _events.Clear();
         _cursor = null;
