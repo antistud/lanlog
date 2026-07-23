@@ -41,6 +41,7 @@ else
                             else { <span class="badge good">enabled</span> }
                         </td>
                         <td class="text-right nowrap">
+                            <button class="btn ghost sm" @onclick="() => OpenEdit(r)">Edit</button>
                             @if (r.IsEnabled) { <button class="btn ghost sm" @onclick="() => Toggle(r.Id, false)">Disable</button> }
                             else { <button class="btn ghost sm" @onclick="() => Toggle(r.Id, true)">Enable</button> }
                             <button class="btn ghost sm" @onclick="() => ResetCooldown(r.Id)">Reset</button>
@@ -52,7 +53,7 @@ else
     </div>
 }
 
-<Modal @bind-Open="_show" Title="New rule" Wide="true">
+<Modal @bind-Open="_show" Title="@(_editId is null ? "New rule" : "Edit rule")" Wide="true">
     <ChildContent>
         <div class="grid cols-2">
             <div class="field"><label>Name</label><input class="input" @bind="_name" placeholder="Billing errors" /></div>
@@ -107,7 +108,7 @@ else
     </ChildContent>
     <Footer>
         <button class="btn ghost" @onclick="() => _show = false">Cancel</button>
-        <button class="btn primary" @onclick="Create">Create rule</button>
+        <button class="btn primary" @onclick="Save">@(_editId is null ? "Create rule" : "Save changes")</button>
     </Footer>
 </Modal>
 
@@ -118,6 +119,9 @@ else
     private readonly Dictionary<string, int> _fires = new();
 
     private bool _show;
+    private string? _editId;
+    private bool _editEnabled;
+    private DateTimeOffset _editCreated;
     private string _name = "", _appId = "", _filter = "", _destId = "", _dedupe = "{{event.eventType}}", _trigger = "EveryMatch";
     private LogLevel _minLevel = LogLevel.Error;
     private int _cooldown = 60, _maxFires = 20, _thresholdCount = 5, _thresholdWindow = 10;
@@ -137,15 +141,32 @@ else
 
     private void OpenCreate()
     {
+        _editId = null;
+        _name = ""; _appId = ""; _filter = ""; _dedupe = "{{event.eventType}}"; _trigger = "EveryMatch";
+        _minLevel = LogLevel.Error; _cooldown = 60; _maxFires = 20; _thresholdCount = 5; _thresholdWindow = 10; _dryRun = true;
         _destId = _destinations.Count > 0 ? _destinations[0].Id : "";
         _show = true;
     }
 
-    private void Create()
+    private void OpenEdit(Logrr.Notify.Rule r)
     {
-        RuleSvc.Create(new Logrr.Notify.Rule
+        _editId = r.Id;
+        _editEnabled = r.IsEnabled;
+        _editCreated = r.CreatedUtc;
+        _name = r.Name; _appId = r.AppId ?? ""; _filter = r.Filter ?? "";
+        _minLevel = r.MinimumLevel;
+        _trigger = r.TriggerType == Logrr.Notify.TriggerType.Threshold ? "Threshold" : "EveryMatch";
+        _thresholdCount = r.ThresholdCount ?? 5; _thresholdWindow = r.ThresholdWindowMinutes ?? 10;
+        _dedupe = r.DedupeKeyTemplate; _cooldown = r.CooldownMinutes; _destId = r.DestinationId;
+        _maxFires = r.MaxFiresPerHour; _dryRun = r.IsDryRun;
+        _show = true;
+    }
+
+    private void Save()
+    {
+        var rule = new Logrr.Notify.Rule
         {
-            Id = Guid.NewGuid().ToString("N"),
+            Id = _editId ?? Guid.NewGuid().ToString("N"),
             Name = string.IsNullOrWhiteSpace(_name) ? "rule" : _name,
             AppId = string.IsNullOrWhiteSpace(_appId) ? null : _appId,
             Filter = string.IsNullOrWhiteSpace(_filter) ? null : _filter,
@@ -158,11 +179,12 @@ else
             DestinationId = _destId,
             MaxFiresPerHour = _maxFires,
             IsDryRun = _dryRun,
-            IsEnabled = true,
-            CreatedUtc = DateTimeOffset.UtcNow,
-        });
+            IsEnabled = _editId is null || _editEnabled,
+            CreatedUtc = _editId is null ? DateTimeOffset.UtcNow : _editCreated,
+        };
+
+        if (_editId is null) { RuleSvc.Create(rule); } else { RuleSvc.Update(rule); }
         _show = false;
-        _name = ""; _filter = "";
         Load();
     }
 

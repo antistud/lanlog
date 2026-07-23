@@ -33,6 +33,7 @@ else
                 <div class="flex between items-center mt-2">
                     <span class="meta">@d.Method · @(d.AuthMode) auth@(d.ConsecutiveFailures > 0 ? $" · {d.ConsecutiveFailures} recent failures" : "")</span>
                     <div class="flex gap-2">
+                        <button class="btn sm" @onclick="() => OpenEdit(d)">Edit</button>
                         <button class="btn sm" @onclick="() => Test(d.Id)">Test</button>
                         <button class="btn danger sm" @onclick="() => Delete(d.Id)">Delete</button>
                     </div>
@@ -43,15 +44,18 @@ else
     </div>
 }
 
-<Modal @bind-Open="_show" Title="New destination" Wide="true">
+<Modal @bind-Open="_show" Title="@(_editId is null ? "New destination" : "Edit destination")" Wide="true">
     <ChildContent>
-        <div class="field">
-            <label>Start from a preset</label>
-            <select class="input" @onchange="ApplyPreset">
-                <option value="">— none —</option>
-                @foreach (var p in Logrr.Notify.DestinationPresets.All) { <option value="@p.Key">@p.Name</option> }
-            </select>
-        </div>
+        @if (_editId is null)
+        {
+            <div class="field">
+                <label>Start from a preset</label>
+                <select class="input" @onchange="ApplyPreset">
+                    <option value="">— none —</option>
+                    @foreach (var p in Logrr.Notify.DestinationPresets.All) { <option value="@p.Key">@p.Name</option> }
+                </select>
+            </div>
+        }
         <div class="grid cols-2">
             <div class="field"><label>Name</label><input class="input" @bind="_name" /></div>
             <div class="field">
@@ -64,7 +68,10 @@ else
         <div class="field"><label>URL</label><input class="input mono" @bind="_url" placeholder="@_urlHint" /></div>
         @if (_authMode != Logrr.Notify.AuthMode.None)
         {
-            <div class="field"><label>Auth secret <span class="muted-2">(write-only, encrypted at rest)</span></label><input class="input" type="password" @bind="_secret" /></div>
+            <div class="field">
+                <label>Auth secret <span class="muted-2">(write-only, encrypted at rest)</span></label>
+                <input class="input" type="password" @bind="_secret" placeholder="@(_editId is null ? "" : "leave blank to keep the current secret")" />
+            </div>
         }
         <div class="grid cols-2">
             <div class="field"><label>Ticket id path</label><input class="input mono" @bind="_idPath" placeholder="$.number" /></div>
@@ -84,7 +91,7 @@ else
     </ChildContent>
     <Footer>
         <button class="btn ghost" @onclick="() => _show = false">Cancel</button>
-        <button class="btn primary" @onclick="Create">Create destination</button>
+        <button class="btn primary" @onclick="Save">@(_editId is null ? "Create destination" : "Save changes")</button>
     </Footer>
 </Modal>
 
@@ -94,7 +101,9 @@ else
     private readonly Dictionary<string, bool> _testOk = new();
 
     private bool _show;
+    private string? _editId;
     private string _name = "", _url = "", _secret = "", _idPath = "", _urlPath = "", _urlHint = "";
+    private string _method = "POST", _contentType = "application/json";
     private string _body = "{\n  \"text\": \"{{event.level}}: {{event.message}}\"\n}";
     private Logrr.Notify.AuthMode _authMode = Logrr.Notify.AuthMode.None;
 
@@ -103,7 +112,21 @@ else
 
     private void OpenCreate()
     {
-        _name = ""; _url = ""; _secret = ""; _idPath = ""; _urlPath = ""; _authMode = Logrr.Notify.AuthMode.None;
+        _editId = null;
+        _name = ""; _url = ""; _secret = ""; _idPath = ""; _urlPath = ""; _urlHint = "";
+        _method = "POST"; _contentType = "application/json";
+        _body = "{\n  \"text\": \"{{event.level}}: {{event.message}}\"\n}";
+        _authMode = Logrr.Notify.AuthMode.None;
+        _show = true;
+    }
+
+    private void OpenEdit(Logrr.Notify.Destination d)
+    {
+        _editId = d.Id;
+        _name = d.Name; _url = d.Url; _secret = ""; // blank = keep existing secret
+        _idPath = d.TicketIdPath ?? ""; _urlPath = d.TicketUrlPath ?? "";
+        _method = d.Method; _contentType = d.ContentType;
+        _body = d.BodyTemplate; _authMode = d.AuthMode;
         _show = true;
     }
 
@@ -141,22 +164,36 @@ else
         return (r.Body, r.Ok, r.Error);
     }
 
-    private void Create()
+    private void Save()
     {
-        Store.Create(new Logrr.Notify.Destination
+        var d = new Logrr.Notify.Destination
         {
-            Id = Guid.NewGuid().ToString("N"),
+            Id = _editId ?? Guid.NewGuid().ToString("N"),
             Name = string.IsNullOrWhiteSpace(_name) ? "destination" : _name,
             Url = _url,
-            ContentType = "application/json",
+            Method = _method,
+            ContentType = _contentType,
             AuthMode = _authMode,
-            AuthSecret = string.IsNullOrEmpty(_secret) ? null : Protector.Protect(_secret),
             BodyTemplate = _body,
             TicketIdPath = string.IsNullOrWhiteSpace(_idPath) ? null : _idPath,
             TicketUrlPath = string.IsNullOrWhiteSpace(_urlPath) ? null : _urlPath,
             IsEnabled = true,
             CreatedUtc = DateTimeOffset.UtcNow,
-        });
+        };
+
+        if (_editId is null)
+        {
+            Store.Create(d with { AuthSecret = string.IsNullOrEmpty(_secret) ? null : Protector.Protect(_secret) });
+        }
+        else
+        {
+            Store.Update(d);
+            if (!string.IsNullOrEmpty(_secret))
+            {
+                Store.UpdateSecret(_editId, Protector.Protect(_secret));
+            }
+        }
+
         _show = false;
         Load();
     }

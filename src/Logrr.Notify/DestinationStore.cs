@@ -41,6 +41,51 @@ public sealed class DestinationStore(ControlDatabase db)
         cmd.ExecuteNonQuery();
     }
 
+    /// <summary>
+    /// Update the editable fields of a destination. Deliberately does NOT touch the
+    /// encrypted secret (use <see cref="UpdateSecret"/>) or the circuit-breaker state.
+    /// </summary>
+    public void Update(Destination d)
+    {
+        using var conn = db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            UPDATE destinations SET
+              name=$name, url=$url, method=$method, content_type=$ct, headers=$headers,
+              auth_mode=$auth, auth_header_name=$authHeader, body_template=$body,
+              ticket_id_path=$idPath, ticket_url_path=$urlPath, timeout_seconds=$timeout,
+              max_attempts=$maxAtt, rate_limit_per_hour=$rate, is_enabled=$en
+            WHERE id=$id;
+            """;
+        cmd.P("$id", d.Id);
+        cmd.P("$name", d.Name);
+        cmd.P("$url", d.Url);
+        cmd.P("$method", d.Method);
+        cmd.P("$ct", d.ContentType);
+        cmd.P("$headers", JsonSerializer.Serialize(d.Headers));
+        cmd.P("$auth", (int)d.AuthMode);
+        cmd.P("$authHeader", d.AuthHeaderName);
+        cmd.P("$body", d.BodyTemplate);
+        cmd.P("$idPath", d.TicketIdPath);
+        cmd.P("$urlPath", d.TicketUrlPath);
+        cmd.P("$timeout", d.TimeoutSeconds);
+        cmd.P("$maxAtt", d.MaxAttempts);
+        cmd.P("$rate", d.RateLimitPerHour);
+        cmd.P("$en", d.IsEnabled ? 1 : 0);
+        cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>Replace the encrypted secret only when the operator enters a new one.</summary>
+    public void UpdateSecret(string id, byte[]? secret)
+    {
+        using var conn = db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "UPDATE destinations SET auth_secret = $secret WHERE id = $id;";
+        cmd.P("$secret", (object?)secret);
+        cmd.P("$id", id);
+        cmd.ExecuteNonQuery();
+    }
+
     public Destination? Get(string id)
     {
         using var conn = db.Open();
