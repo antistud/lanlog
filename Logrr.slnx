@@ -1,0 +1,14 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Logrr.Contracts/Logrr.Contracts.csproj" />
+    <Project Path="src/Logrr.Core/Logrr.Core.csproj" />
+    <Project Path="src/Logrr.Notify/Logrr.Notify.csproj" />
+    <Project Path="src/Logrr.Realtime/Logrr.Realtime.csproj" />
+    <Project Path="src/Logrr.Server/Logrr.Server.csproj" />
+    <Project Path="src/Logrr.Storage/Logrr.Storage.csproj" />
+  </Folder>
+  <Folder Name="/test/">
+    <Project Path="test/Logrr.LoadTests/Logrr.LoadTests.csproj" />
+    <Project Path="test/Logrr.Tests/Logrr.Tests.csproj" />
+  </Folder>
+</Solution>

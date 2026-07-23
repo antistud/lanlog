@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Logrr.Contracts\Logrr.Contracts.csproj" />
+    <ProjectReference Include="..\Logrr.Core\Logrr.Core.csproj" />
+  </ItemGroup>
+
+</Project>

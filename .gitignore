@@ -1,0 +1,21 @@
+# Build output
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+publish/
+*.user
+
+# Rider / VS
+.idea/
+.vs/
+
+# Local data (Logrr writes partitions/control.db under a data dir)
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Test results
+TestResults/
+*.trx

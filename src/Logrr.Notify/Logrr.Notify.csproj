@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\Logrr.Contracts\Logrr.Contracts.csproj" />
+    <ProjectReference Include="..\Logrr.Core\Logrr.Core.csproj" />
+    <ProjectReference Include="..\Logrr.Storage\Logrr.Storage.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <ItemGroup>
+    <PackageReference Include="Serilog.AspNetCore" />
+    <PackageReference Include="Serilog.Sinks.File" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Logrr.Contracts\Logrr.Contracts.csproj" />
+    <ProjectReference Include="..\Logrr.Core\Logrr.Core.csproj" />
+    <ProjectReference Include="..\Logrr.Storage\Logrr.Storage.csproj" />
+    <ProjectReference Include="..\Logrr.Realtime\Logrr.Realtime.csproj" />
+    <ProjectReference Include="..\Logrr.Notify\Logrr.Notify.csproj" />
+  </ItemGroup>
+
+</Project>

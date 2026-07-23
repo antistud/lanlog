@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <OutputType>Library</OutputType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Logrr.Contracts\Logrr.Contracts.csproj" />
+    <ProjectReference Include="..\..\src\Logrr.Core\Logrr.Core.csproj" />
+    <ProjectReference Include="..\..\src\Logrr.Storage\Logrr.Storage.csproj" />
+    <ProjectReference Include="..\..\src\Logrr.Realtime\Logrr.Realtime.csproj" />
+    <ProjectReference Include="..\..\src\Logrr.Notify\Logrr.Notify.csproj" />
+  </ItemGroup>
+
+</Project>
