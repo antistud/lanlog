@@ -1,0 +1,137 @@
+@page "/apps/{AppId}/tokens"
+@attribute [Authorize(Roles = "Admin")]
+@rendermode InteractiveServer
+@inject Logrr.Storage.Control.TokenStore TokenSvc
+@inject Logrr.Storage.Control.AppStore Apps
+@inject IJSRuntime JS
+
+<PageTitle>@AppId · tokens — Logrr</PageTitle>
+
+<AppTabs AppId="@AppId" Active="tokens" Title="Tokens">
+    <button class="btn primary" @onclick="() => _showCreate = true">＋ New token</button>
+</AppTabs>
+
+@if (_tokens.Count == 0)
+{
+    <div class="card">
+        <EmptyState Glyph="⚿" Title="No tokens yet">
+            Create a token to let an app send logs. The secret is shown once at creation.
+        </EmptyState>
+    </div>
+}
+else
+{
+    <div class="table-wrap">
+        <table class="data">
+            <thead>
+                <tr><th>Name</th><th>Prefix</th><th>Scopes</th><th>Last used</th><th>Status</th><th></th></tr>
+            </thead>
+            <tbody>
+                @foreach (var t in _tokens)
+                {
+                    <tr>
+                        <td>@(string.IsNullOrEmpty(t.Name) ? "—" : t.Name)</td>
+                        <td class="mono-sm">@t.Prefix…</td>
+                        <td>
+                            @if (t.Scopes.HasFlag(TokenScopes.Ingest)) { <span class="badge">Ingest</span> }
+                            @if (t.Scopes.HasFlag(TokenScopes.Read)) { <span class="badge">Read</span> }
+                        </td>
+                        <td class="meta">@(t.LastUsedUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? "never")</td>
+                        <td>
+                            @if (t.RevokedUtc is not null) { <span class="badge danger">revoked</span> }
+                            else if (t.ExpiresUtc is { } ex && ex < DateTimeOffset.UtcNow) { <span class="badge warn">expired</span> }
+                            else { <span class="badge good">active</span> }
+                        </td>
+                        <td class="text-right">
+                            @if (t.RevokedUtc is null)
+                            {
+                                <button class="btn danger sm" @onclick="() => Revoke(t.Id)">Revoke</button>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+<Modal @bind-Open="_showCreate" Title="New token">
+    <ChildContent>
+        <div class="field">
+            <label>Name <span class="muted-2">(optional)</span></label>
+            <input class="input" @bind="_name" placeholder="Production sink" />
+        </div>
+        <div class="field">
+            <label>Scopes</label>
+            <label class="flex gap-2 items-center" style="cursor:pointer; font-weight:400"><input type="checkbox" @bind="_ingest" /> Ingest</label>
+            <label class="flex gap-2 items-center" style="cursor:pointer; font-weight:400"><input type="checkbox" @bind="_read" /> Read</label>
+        </div>
+    </ChildContent>
+    <Footer>
+        <button class="btn ghost" @onclick="() => _showCreate = false">Cancel</button>
+        <button class="btn primary" @onclick="Create">Generate token</button>
+    </Footer>
+</Modal>
+
+<Modal Open="_secret is not null" Title="Token created" CloseOnBackdrop="false">
+    <ChildContent>
+        <p class="muted mb-4">Copy this secret now — it will not be shown again.</p>
+        <div class="flex gap-2 items-center">
+            <input class="input mono" readonly value="@_secret" />
+            <button class="btn" @onclick="Copy">@(_copied ? "✓ Copied" : "Copy")</button>
+        </div>
+    </ChildContent>
+    <Footer>
+        <button class="btn primary" @onclick="AckSecret">I've saved this</button>
+    </Footer>
+</Modal>
+
+@code {
+    [Parameter] public string AppId { get; set; } = "";
+
+    private IReadOnlyList<Logrr.Storage.Control.TokenRecord> _tokens = [];
+    private bool _showCreate;
+    private string _name = "";
+    private bool _ingest = true, _read = true;
+    private string? _secret;
+    private bool _copied;
+
+    protected override void OnInitialized() => Load();
+
+    private void Load() => _tokens = TokenSvc.ListByApp(AppId);
+
+    private void Create()
+    {
+        var scopes = (_ingest ? TokenScopes.Ingest : 0) | (_read ? TokenScopes.Read : 0);
+        var secret = Logrr.Server.Security.TokenSecret.Generate(AppId);
+        TokenSvc.Create(new Logrr.Storage.Control.TokenRecord
+        {
+            Id = Guid.NewGuid().ToString("N"),
+            AppId = AppId,
+            Name = string.IsNullOrWhiteSpace(_name) ? null : _name,
+            Prefix = Logrr.Server.Security.TokenSecret.Prefix(secret),
+            Hash = Logrr.Server.Security.TokenSecret.Hash(secret),
+            Scopes = scopes,
+            CreatedUtc = DateTimeOffset.UtcNow,
+        });
+        _showCreate = false;
+        _name = "";
+        _copied = false;
+        _secret = secret;
+        Load();
+    }
+
+    private async Task Copy()
+    {
+        await JS.InvokeVoidAsync("logrrCopy", _secret);
+        _copied = true;
+    }
+
+    private void AckSecret() => _secret = null;
+
+    private void Revoke(string id)
+    {
+        TokenSvc.Revoke(id, DateTimeOffset.UtcNow);
+        Load();
+    }
+}

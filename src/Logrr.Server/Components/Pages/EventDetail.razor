@@ -1,0 +1,179 @@
+@page "/apps/{AppId}/events/{EventId}"
+@attribute [Authorize]
+@rendermode InteractiveServer
+@inject Logrr.Storage.EventReader Reader
+@inject Logrr.Storage.Control.AppStore Apps
+@inject Logrr.Notify.TicketLinkStore TicketLinks
+@inject Logrr.Notify.DestinationStore Destinations
+@inject Logrr.Notify.ManualTicketService Manual
+@inject AuthenticationStateProvider AuthState
+
+<PageTitle>Event @EventId — Logrr</PageTitle>
+
+<div class="page-head">
+    <div>
+        <div class="meta"><a href="/">Apps</a> <span class="muted-2">/</span>
+            <a href="@($"/apps/{AppId}/search")">@AppId</a> <span class="muted-2">/</span> <span class="mono-sm">event</span></div>
+        <h1>Event detail</h1>
+    </div>
+    <div class="flex gap-2">
+        @if (_link is not null && _link.TicketUrl is not null)
+        {
+            <a class="badge accent" href="@_link.TicketUrl" target="_blank">🎫 Linked ticket</a>
+        }
+        <button class="btn primary" @onclick="() => _showTicket = true" disabled="@(_event is null)">Create ticket</button>
+    </div>
+</div>
+
+@if (_event is null)
+{
+    <div class="card"><EmptyState Glyph="⌕" Title="Event not found">This event may have aged out of retention.</EmptyState></div>
+}
+else
+{
+    var e = _event;
+    <div class="card">
+        <div class="flex gap-3 items-center mb-4">
+            <LevelChip Level="e.Level" />
+            <span class="mono-sm">@e.Timestamp.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff")</span>
+            <span class="flex-1"></span>
+            <span class="mono-sm">@e.Id</span>
+        </div>
+        <h3 style="font-weight:600; margin-bottom:var(--sp-4)">@e.Message</h3>
+        <dl class="kv">
+            @if (e.Template is not null) { <dt>Template</dt><dd class="mono-sm">@e.Template</dd> }
+            @if (e.Source is not null) { <dt>Source</dt><dd class="mono-sm">@e.Source</dd> }
+            @if (e.Machine is not null) { <dt>Machine</dt><dd class="mono-sm">@e.Machine</dd> }
+            @if (e.TraceId is not null) { <dt>Trace id</dt><dd class="mono-sm">@e.TraceId</dd> }
+            @if (e.EventType is not null) { <dt>Event type</dt><dd class="mono-sm">@e.EventType</dd> }
+        </dl>
+    </div>
+
+    @if (e.Exception is not null)
+    {
+        <div class="card">
+            <div class="card-head"><h3>Exception</h3></div>
+            <pre class="code">@e.Exception</pre>
+        </div>
+    }
+
+    @if (e.Properties is { ValueKind: System.Text.Json.JsonValueKind.Object } props)
+    {
+        <div class="card">
+            <div class="card-head"><h3>Properties</h3></div>
+            <pre class="code">@System.Text.Json.JsonSerializer.Serialize(props, Indented)</pre>
+        </div>
+    }
+
+    @if (_related.Count > 0)
+    {
+        <div class="card">
+            <div class="card-head"><h3>Related by trace</h3><span class="badge">@_related.Count</span></div>
+            <div class="table-wrap" style="border:none">
+                <table class="data">
+                    <tbody>
+                        @foreach (var r in _related)
+                        {
+                            <tr>
+                                <td class="mono-sm nowrap" style="width:180px">@r.Timestamp.ToLocalTime().ToString("HH:mm:ss.fff")</td>
+                                <td style="width:110px"><LevelChip Level="r.Level" /></td>
+                                <td class="truncate" style="max-width:520px">@r.Message</td>
+                                <td class="text-right" style="width:80px">@if (r.Id != e.Id) { <a href="@($"/apps/{AppId}/events/{r.Id}")">→</a> }</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    }
+}
+
+<Modal @bind-Open="_showTicket" Title="Create ticket">
+    <ChildContent>
+        @if (_destinations.Count == 0)
+        {
+            <p class="muted">No destinations configured. Add one under <a href="/destinations">Destinations</a> first.</p>
+        }
+        else
+        {
+            <div class="field">
+                <label>Destination</label>
+                <select class="input" @bind="_destId">
+                    @foreach (var d in _destinations) { <option value="@d.Id">@d.Name</option> }
+                </select>
+            </div>
+            <div class="field">
+                <label>Title <span class="muted-2">(optional, template override)</span></label>
+                <input class="input" @bind="_title" />
+            </div>
+            <div class="field">
+                <label>Body <span class="muted-2">(optional)</span></label>
+                <textarea class="input" @bind="_body" rows="4"></textarea>
+            </div>
+            @if (_ticketMsg is not null)
+            {
+                <div class="badge @(_ticketOk ? "good" : "danger")">@_ticketMsg</div>
+            }
+        }
+    </ChildContent>
+    <Footer>
+        <button class="btn ghost" @onclick="() => _showTicket = false">Cancel</button>
+        <button class="btn primary" @onclick="SubmitTicket" disabled="@(_destinations.Count == 0)">Submit</button>
+    </Footer>
+</Modal>
+
+@code {
+    [Parameter] public string AppId { get; set; } = "";
+    [Parameter] public string EventId { get; set; } = "";
+
+    private static readonly System.Text.Json.JsonSerializerOptions Indented = new() { WriteIndented = true };
+
+    private LogEventDto? _event;
+    private readonly List<LogEventDto> _related = new();
+    private Logrr.Notify.TicketLink? _link;
+    private IReadOnlyList<Logrr.Notify.Destination> _destinations = [];
+
+    private bool _showTicket;
+    private string _destId = "", _title = "", _body = "";
+    private string? _ticketMsg;
+    private bool _ticketOk;
+
+    protected override void OnInitialized()
+    {
+        _event = Reader.GetById(AppId, EventId);
+        _destinations = Destinations.List().Where(d => d.IsEnabled).ToList();
+        if (_destinations.Count > 0) { _destId = _destinations[0].Id; }
+
+        if (_event is null) { return; }
+
+        if (_event.EventType is { } type)
+        {
+            _link = TicketLinks.FindByEventType(AppId, type);
+        }
+        if (_event.TraceId is { } trace)
+        {
+            var page = Reader.Query(new Logrr.Storage.EventQuery { AppId = AppId, Filter = $"TraceId = '{trace}'", Limit = 50 });
+            _related.AddRange(page.Events);
+        }
+    }
+
+    private async Task SubmitTicket()
+    {
+        var auth = await AuthState.GetAuthenticationStateAsync();
+        var appName = Apps.Get(AppId)?.Name;
+        var ev = _event is null ? null : ToEvent(_event);
+        var result = Manual.Submit(_destId, AppId, appName, ev, EventId,
+            string.IsNullOrWhiteSpace(_title) ? null : _title,
+            string.IsNullOrWhiteSpace(_body) ? null : _body,
+            auth.User.Identity?.Name);
+        _ticketOk = result.Error is null;
+        _ticketMsg = result.Error ?? "Queued for delivery.";
+    }
+
+    private static Logrr.Core.LogEvent ToEvent(LogEventDto d) => new()
+    {
+        Timestamp = d.Timestamp, Level = d.Level, Template = d.Template, Message = d.Message,
+        Exception = d.Exception, EventType = d.EventType ?? 0, TraceId = d.TraceId, Source = d.Source,
+        Properties = new Dictionary<string, object?>(),
+    };
+}

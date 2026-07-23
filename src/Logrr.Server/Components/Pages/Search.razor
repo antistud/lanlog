@@ -1,0 +1,135 @@
+@page "/apps/{AppId}/search"
+@attribute [Authorize]
+@rendermode InteractiveServer
+@inject Logrr.Storage.EventReader Reader
+
+<PageTitle>@AppId · search — Logrr</PageTitle>
+
+<AppTabs AppId="@AppId" Active="search" Title="Search" />
+
+<div class="card" style="padding:var(--sp-3) var(--sp-4); margin-bottom:var(--sp-4)">
+    <div class="row">
+        <div class="field flex-1" style="margin:0; min-width:220px">
+            <label>Full-text</label>
+            <input class="input" @bind="_text" @bind:after="Run" placeholder="timeout" />
+        </div>
+        <div class="field" style="margin:0; min-width:140px">
+            <label>Level ≥</label>
+            <select class="input" @bind="_level" @bind:after="Run">
+                <option value="">Any</option>
+                @foreach (var l in Levels) { <option value="@l">@l</option> }
+            </select>
+        </div>
+        <div class="field" style="margin:0; min-width:140px">
+            <label>Time range</label>
+            <select class="input" @bind="_range" @bind:after="Run">
+                <option value="15m">Last 15 min</option>
+                <option value="1h">Last hour</option>
+                <option value="24h">Last 24 hours</option>
+                <option value="7d">Last 7 days</option>
+                <option value="all">All time</option>
+            </select>
+        </div>
+    </div>
+    <div class="field flex-1" style="margin:var(--sp-3) 0 0">
+        <label>Filter expression</label>
+        <input class="input mono" @bind="_filter" @bind:after="Run" placeholder="Level >= Warning and not Source = 'HealthCheck'" />
+        @if (_error is not null)
+        {
+            <span class="hint" style="color:var(--danger)">@_error</span>
+        }
+    </div>
+</div>
+
+<div class="flex between items-center mb-4 meta">
+    <span>@_events.Count result@(_events.Count == 1 ? "" : "s")@(_partitions > 0 ? $" · {_partitions} partition(s) scanned" : "")</span>
+</div>
+
+<div class="table-wrap">
+    <table class="data">
+        <thead>
+            <tr><th style="width:180px">Time</th><th style="width:110px">Level</th><th>Message</th><th style="width:120px"></th></tr>
+        </thead>
+        <tbody>
+            @if (_events.Count == 0)
+            {
+                <tr><td colspan="4"><div class="empty" style="padding:var(--sp-6)"><div class="glyph">⌕</div><div class="muted">No matching events.</div></div></td></tr>
+            }
+            @foreach (var e in _events)
+            {
+                <tr>
+                    <td class="mono-sm nowrap">@e.Timestamp.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</td>
+                    <td><LevelChip Level="e.Level" /></td>
+                    <td class="truncate" style="max-width:560px">@e.Message</td>
+                    <td class="text-right"><a href="@($"/apps/{AppId}/events/{e.Id}")">Detail →</a></td>
+                </tr>
+            }
+        </tbody>
+    </table>
+</div>
+
+@if (_cursor is not null)
+{
+    <div class="row" style="justify-content:center; margin-top:var(--sp-4)">
+        <button class="btn" @onclick="More">Load more</button>
+    </div>
+}
+
+@code {
+    [Parameter] public string AppId { get; set; } = "";
+    private static readonly string[] Levels = ["Verbose", "Debug", "Information", "Warning", "Error", "Fatal"];
+
+    private string _text = "", _level = "", _filter = "", _range = "24h";
+    private string? _cursor, _error;
+    private int _partitions;
+    private readonly List<LogEventDto> _events = new();
+
+    protected override void OnInitialized() => Run();
+
+    private void Run()
+    {
+        _events.Clear();
+        _cursor = null;
+        _partitions = 0;
+        Fetch(reset: true);
+    }
+
+    private void More() => Fetch(reset: false);
+
+    private void Fetch(bool reset)
+    {
+        _error = null;
+        try
+        {
+            var page = Reader.Query(new Logrr.Storage.EventQuery
+            {
+                AppId = AppId,
+                From = FromForRange(),
+                MinLevel = _level != "" && LevelMap(_level) is { } lvl ? lvl : null,
+                Text = string.IsNullOrWhiteSpace(_text) ? null : _text,
+                Filter = string.IsNullOrWhiteSpace(_filter) ? null : _filter,
+                Cursor = reset ? null : _cursor,
+                Limit = 100,
+            });
+            _events.AddRange(page.Events);
+            _cursor = page.NextCursor;
+            _partitions = Math.Max(_partitions, page.PartitionsScanned);
+        }
+        catch (Logrr.Core.Filters.FilterParseException ex)
+        {
+            _error = $"Filter: {ex.Message}";
+        }
+    }
+
+    private DateTimeOffset? FromForRange() => _range switch
+    {
+        "15m" => DateTimeOffset.UtcNow.AddMinutes(-15),
+        "1h" => DateTimeOffset.UtcNow.AddHours(-1),
+        "24h" => DateTimeOffset.UtcNow.AddHours(-24),
+        "7d" => DateTimeOffset.UtcNow.AddDays(-7),
+        _ => null,
+    };
+
+    private static LogLevel? LevelMap(string name) =>
+        Logrr.Core.LevelMap.TryParse(name, out var l) ? l : null;
+}

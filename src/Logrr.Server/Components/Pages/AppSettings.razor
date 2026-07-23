@@ -1,0 +1,92 @@
+@page "/apps/{AppId}/settings"
+@attribute [Authorize(Roles = "Admin")]
+@rendermode InteractiveServer
+@inject Logrr.Storage.Control.AppStore Apps
+
+<PageTitle>@AppId · settings — Logrr</PageTitle>
+
+<AppTabs AppId="@AppId" Active="settings" Title="Settings" />
+
+@if (_app is null)
+{
+    <div class="card"><EmptyState Glyph="⚙" Title="App not found" /></div>
+}
+else
+{
+    <div class="card" style="max-width:640px">
+        <div class="grid cols-2">
+            <div class="field"><label>Display name</label><input class="input" @bind="_name" /></div>
+            <div class="field">
+                <label>Minimum level</label>
+                <select class="input" @bind="_minLevel">
+                    @foreach (var l in Enum.GetValues<LogLevel>()) { <option value="@l">@l</option> }
+                </select>
+            </div>
+            <div class="field"><label>Retention (days)</label><input class="input" type="number" @bind="_retention" /></div>
+            <div class="field"><label>Max size (MB)</label><input class="input" type="number" @bind="_maxSize" /></div>
+        </div>
+        <div class="field">
+            <label>Description</label>
+            <input class="input" @bind="_description" />
+        </div>
+        <div class="field">
+            <label>Indexed properties <span class="muted-2">(comma-separated, max 8 — applies to tomorrow's partition)</span></label>
+            <input class="input mono" @bind="_indexed" placeholder="TenantId, Region" />
+        </div>
+        <div class="field">
+            <label class="flex gap-2 items-center" style="cursor:pointer">
+                <input type="checkbox" @bind="_enabled" /> App enabled
+            </label>
+            <span class="hint">When disabled, ingest returns 403 but retained data stays queryable.</span>
+        </div>
+        <hr class="divider" />
+        <div class="row between">
+            <span class="meta">Created @_app.CreatedUtc.ToLocalTime().ToString("yyyy-MM-dd")</span>
+            <div class="flex gap-2 items-center">
+                @if (_saved) { <span class="badge good">Saved</span> }
+                <button class="btn primary" @onclick="Save">Save changes</button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public string AppId { get; set; } = "";
+
+    private Logrr.Storage.Control.AppRecord? _app;
+    private string _name = "", _description = "", _indexed = "";
+    private int _retention, _maxSize;
+    private LogLevel _minLevel;
+    private bool _enabled, _saved;
+
+    protected override void OnInitialized()
+    {
+        _app = Apps.Get(AppId);
+        if (_app is null) { return; }
+        _name = _app.Name;
+        _description = _app.Description ?? "";
+        _indexed = string.Join(", ", _app.IndexedProperties);
+        _retention = _app.RetentionDays;
+        _maxSize = _app.MaxSizeMb;
+        _minLevel = _app.MinimumLevel;
+        _enabled = _app.IsEnabled;
+    }
+
+    private void Save()
+    {
+        if (_app is null) { return; }
+        var indexed = _indexed.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Take(8).ToList();
+        Apps.Update(_app with
+        {
+            Name = string.IsNullOrWhiteSpace(_name) ? _app.Id : _name,
+            Description = string.IsNullOrWhiteSpace(_description) ? null : _description,
+            IndexedProperties = indexed,
+            RetentionDays = _retention,
+            MaxSizeMb = _maxSize,
+            MinimumLevel = _minLevel,
+            IsEnabled = _enabled,
+        });
+        _app = Apps.Get(AppId);
+        _saved = true;
+    }
+}

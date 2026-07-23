@@ -1,3 +1,9 @@
+// Copy helper used by the tokens/secret UI.
+window.logrrCopy = function (text) {
+  if (navigator.clipboard) { return navigator.clipboard.writeText(text); }
+  return Promise.resolve();
+};
+
 // Theme: explicit choice wins, otherwise follow the OS. Persisted in localStorage.
 window.logrrTheme = {
   get() {
