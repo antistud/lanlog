@@ -40,7 +40,7 @@
                 <div class="spacer"></div>
 
                 <div class="row" style="justify-content:space-between; padding:0 var(--sp-2)">
-                    <span class="meta">@context.User.Identity?.Name</span>
+                    <a class="meta" href="/account/password" title="Change password">@context.User.Identity?.Name</a>
                     <div class="flex gap-2">
                         <button class="btn ghost icon" title="Toggle theme"
                                 onclick="var m=window.logrrTheme.cycle();this.textContent=m==='dark'?'☾':m==='light'?'☀':'◐';">◐</button>
@@ -64,6 +64,8 @@
 </AuthorizeView>
 
 @code {
+    [CascadingParameter] private Task<AuthenticationState>? AuthState { get; set; }
+
     private string? _appId;
 
     protected override void OnInitialized()
@@ -72,10 +74,27 @@
         Recompute();
     }
 
+    protected override async Task OnParametersSetAsync() => await EnforcePasswordChange();
+
     private void OnLocationChanged(object? sender, Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs e)
     {
         Recompute();
+        _ = EnforcePasswordChange();
         StateHasChanged();
+    }
+
+    // A user still owing a password change is confined to the change-password page (SPEC §2).
+    private async Task EnforcePasswordChange()
+    {
+        if (AuthState is null) { return; }
+        var state = await AuthState;
+        if (!state.User.HasClaim(Logrr.Server.Auth.AuthEndpoints.MustChangeClaim, "1")) { return; }
+
+        var path = new Uri(Nav.Uri).AbsolutePath;
+        if (!path.Equals("/account/password", StringComparison.OrdinalIgnoreCase))
+        {
+            Nav.NavigateTo("/account/password");
+        }
     }
 
     private void Recompute()
