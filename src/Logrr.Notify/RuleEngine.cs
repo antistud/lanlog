@@ -191,6 +191,7 @@ public sealed class RuleEngine(
             RuleId = rule.Id,
             AppId = appId,
             Source = DeliverySource.Rule,
+            EventType = ev.EventType,
             CreatedUtc = now,
             Attempt = 0,
             NextAttemptUtc = now,

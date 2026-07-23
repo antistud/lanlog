@@ -3,6 +3,7 @@
 @rendermode InteractiveServer
 @implements IDisposable
 @inject Logrr.Realtime.RealtimeBroker Broker
+@inject Logrr.Notify.TicketLinkStore TicketLinks
 
 <PageTitle>@AppId · live tail — Logrr</PageTitle>
 
@@ -76,7 +77,13 @@
                 <tr class="clickable" @onclick="() => Toggle(row)">
                     <td class="mono-sm nowrap">@row.Event.Timestamp.ToLocalTime().ToString("HH:mm:ss.fff")</td>
                     <td><LevelChip Level="row.Event.Level" /></td>
-                    <td class="truncate" style="max-width:640px">@row.Event.Message</td>
+                    <td class="truncate" style="max-width:640px">
+                        @row.Event.Message
+                        @if (row.Event.EventType is { } et && _tickets.TryGetValue(et, out var url))
+                        {
+                            <a class="badge accent" style="margin-left:6px" href="@url" target="_blank" @onclick:stopPropagation="true">🎫</a>
+                        }
+                    </td>
                 </tr>
                 @if (row.Expanded)
                 {
@@ -125,7 +132,13 @@
     private int _matchedTotal;
     private int _droppedTotal;
 
-    protected override void OnInitialized() => Subscribe();
+    private IReadOnlyDictionary<long, string> _tickets = new Dictionary<long, string>();
+
+    protected override void OnInitialized()
+    {
+        _tickets = TicketLinks.TicketUrlsByEventType(AppId);
+        Subscribe();
+    }
 
     private void Subscribe()
     {

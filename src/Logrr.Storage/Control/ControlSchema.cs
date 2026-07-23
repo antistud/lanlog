@@ -90,5 +90,11 @@ public static class ControlSchema
         );
         CREATE INDEX ix_ticket_links_type ON ticket_links(app_id, event_type);
         """,
+
+        // v2 — carry the event type on a delivery so its ticket link records it,
+        // which powers the "this event type has a ticket" grid badge (SPEC §10.6).
+        """
+        ALTER TABLE deliveries ADD COLUMN event_type INTEGER;
+        """,
     ];
 }

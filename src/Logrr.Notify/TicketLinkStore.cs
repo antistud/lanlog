@@ -40,6 +40,29 @@ public sealed class TicketLinkStore(ControlDatabase db)
         return list;
     }
 
+    /// <summary>
+    /// Map of event-type → most-recent ticket url for an app, for rendering grid badges
+    /// (SPEC §10.6). Loaded once per page, checked in memory per row.
+    /// </summary>
+    public IReadOnlyDictionary<long, string> TicketUrlsByEventType(string appId)
+    {
+        using var conn = db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT event_type, ticket_url FROM ticket_links
+            WHERE app_id = $app AND event_type IS NOT NULL AND ticket_url IS NOT NULL
+            ORDER BY created_utc;
+            """;
+        cmd.P("$app", appId);
+        var map = new Dictionary<long, string>();
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+        {
+            map[r.GetInt64(0)] = r.GetString(1); // later rows overwrite → newest wins
+        }
+        return map;
+    }
+
     public TicketLink? FindByEventType(string appId, long eventType)
     {
         using var conn = db.Open();

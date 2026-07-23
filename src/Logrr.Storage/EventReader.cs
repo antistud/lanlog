@@ -192,6 +192,33 @@ public sealed class EventReader(PartitionManager partitions)
         };
     }
 
+    /// <summary>
+    /// Count how many events of a given type an app has (uses the type index; scans the
+    /// most recent partitions, bounded). Powers the occurrence count on event detail.
+    /// </summary>
+    public long CountByEventType(string appId, long eventType, int maxPartitions = 60)
+    {
+        long total = 0;
+        var scanned = 0;
+        foreach (var day in partitions.ExistingDaysDescending(appId))
+        {
+            if (scanned++ >= maxPartitions)
+            {
+                break;
+            }
+            using var conn = partitions.OpenReader(appId, day);
+            if (conn is null)
+            {
+                continue;
+            }
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "SELECT COUNT(*) FROM events WHERE event_type = $t;";
+            cmd.Add("$t", eventType);
+            total += Convert.ToInt64(cmd.ExecuteScalar());
+        }
+        return total;
+    }
+
     /// <summary>Fetch a single event by its composite id (SPEC §7 event detail).</summary>
     public LogEventDto? GetById(string appId, string eventId)
     {

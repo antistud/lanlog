@@ -15,10 +15,10 @@ public sealed class DeliveryStore(ControlDatabase db)
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            INSERT INTO deliveries (id, destination_id, rule_id, app_id, source, created_utc,
+            INSERT INTO deliveries (id, destination_id, rule_id, app_id, source, event_type, created_utc,
               attempt, next_attempt_utc, status, request_body, response_status, response_snippet,
               ticket_id, ticket_url, error)
-            VALUES ($id, $dest, $rule, $app, $source, $created,
+            VALUES ($id, $dest, $rule, $app, $source, $eventType, $created,
               $attempt, $next, $status, $body, $respStatus, $respSnippet,
               $ticketId, $ticketUrl, $error)
             ON CONFLICT(id) DO UPDATE SET
@@ -31,6 +31,7 @@ public sealed class DeliveryStore(ControlDatabase db)
         cmd.P("$rule", d.RuleId);
         cmd.P("$app", d.AppId);
         cmd.P("$source", (int)d.Source);
+        cmd.P("$eventType", d.EventType);
         cmd.P("$created", d.CreatedUtc.Ms());
         cmd.P("$attempt", d.Attempt);
         cmd.P("$next", d.NextAttemptUtc.Ms());
@@ -130,6 +131,7 @@ public sealed class DeliveryStore(ControlDatabase db)
         RuleId = r.Str("rule_id"),
         AppId = r.Str("app_id"),
         Source = (DeliverySource)r.GetInt32(r.GetOrdinal("source")),
+        EventType = r.LongNull("event_type"),
         CreatedUtc = r.ReadTs("created_utc"),
         Attempt = r.GetInt32(r.GetOrdinal("attempt")),
         NextAttemptUtc = r.ReadTsNull("next_attempt_utc"),

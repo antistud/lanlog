@@ -140,6 +140,7 @@ public sealed class DeliveryDispatcher(
             {
                 Id = Guid.NewGuid().ToString("N"),
                 AppId = delivery.AppId ?? "",
+                EventType = delivery.EventType,
                 DeliveryId = delivery.Id,
                 TicketId = ticketId,
                 TicketUrl = ticketUrl,

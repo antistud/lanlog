@@ -50,6 +50,28 @@ public class DeliveryDispatcherTests : IDisposable
     }
 
     [Fact]
+    public async Task Ticket_link_records_event_type_for_grid_badges()
+    {
+        AddDestination();
+        _h.Deliveries.Enqueue(new Delivery
+        {
+            Id = "et1", DestinationId = "d1", AppId = "billing", Source = DeliverySource.Rule,
+            EventType = 987654, CreatedUtc = _now, Attempt = 0, NextAttemptUtc = _now,
+            Status = DeliveryStatus.Pending, RequestBody = "{}",
+        });
+        var handler = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.Created)
+        {
+            Content = new StringContent("""{"number":7,"html_url":"https://git/issues/7"}"""),
+        });
+
+        await Dispatcher(handler).ProcessDueAsync(CancellationToken.None);
+
+        var map = _h.TicketLinks.TicketUrlsByEventType("billing");
+        Assert.True(map.TryGetValue(987654, out var url));
+        Assert.Equal("https://git/issues/7", url);
+    }
+
+    [Fact]
     public async Task Failed_delivery_schedules_a_retry_with_backoff()
     {
         AddDestination();

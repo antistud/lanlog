@@ -45,7 +45,11 @@ else
             @if (e.Source is not null) { <dt>Source</dt><dd class="mono-sm">@e.Source</dd> }
             @if (e.Machine is not null) { <dt>Machine</dt><dd class="mono-sm">@e.Machine</dd> }
             @if (e.TraceId is not null) { <dt>Trace id</dt><dd class="mono-sm">@e.TraceId</dd> }
-            @if (e.EventType is not null) { <dt>Event type</dt><dd class="mono-sm">@e.EventType</dd> }
+            @if (e.EventType is not null)
+            {
+                <dt>Event type</dt><dd class="mono-sm">@e.EventType</dd>
+                <dt>Occurrences</dt><dd>@_occurrences.ToString("N0") of this type</dd>
+            }
         </dl>
     </div>
 
@@ -131,6 +135,7 @@ else
     private LogEventDto? _event;
     private readonly List<LogEventDto> _related = new();
     private Logrr.Notify.TicketLink? _link;
+    private long _occurrences;
     private IReadOnlyList<Logrr.Notify.Destination> _destinations = [];
 
     private bool _showTicket;
@@ -149,6 +154,7 @@ else
         if (_event.EventType is { } type)
         {
             _link = TicketLinks.FindByEventType(AppId, type);
+            _occurrences = Reader.CountByEventType(AppId, type);
         }
         if (_event.TraceId is { } trace)
         {

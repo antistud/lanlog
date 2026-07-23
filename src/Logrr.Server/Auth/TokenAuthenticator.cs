@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Logrr.Contracts;
 using Logrr.Server.Security;
 using Logrr.Storage.Control;
@@ -25,6 +26,8 @@ public sealed record AuthResult(AuthContext? Context, AuthFailure Failure)
 public sealed class TokenAuthenticator(TokenStore tokens, AppStore apps, IMemoryCache cache)
 {
     private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan StampInterval = TimeSpan.FromMinutes(1);
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _lastStamped = new();
 
     private sealed record CachedToken(TokenRecord Token, AppRecord App);
 
@@ -68,7 +71,25 @@ public sealed class TokenAuthenticator(TokenStore tokens, AppStore apps, IMemory
             return AuthResult.Fail(AuthFailure.Forbidden); // disabled app → ingest 403 (SPEC §5.1)
         }
 
+        StampLastUsed(entry.Token.Id, now);
         return AuthResult.Success(new AuthContext(entry.Token, entry.App));
+    }
+
+    // Update last-used at most once a minute per token, off the request thread (SPEC §5.2).
+    private void StampLastUsed(string tokenId, DateTimeOffset now)
+    {
+        var last = _lastStamped.GetOrAdd(tokenId, DateTimeOffset.MinValue);
+        if (now - last < StampInterval)
+        {
+            return;
+        }
+        if (_lastStamped.TryUpdate(tokenId, now, last))
+        {
+            _ = Task.Run(() =>
+            {
+                try { tokens.TouchLastUsed(tokenId, now); } catch { /* best-effort */ }
+            });
+        }
     }
 
     private static string? ExtractSecret(HttpRequest request)

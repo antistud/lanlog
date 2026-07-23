@@ -2,6 +2,7 @@
 @attribute [Authorize]
 @rendermode InteractiveServer
 @inject Logrr.Storage.EventReader Reader
+@inject Logrr.Notify.TicketLinkStore TicketLinks
 
 <PageTitle>@AppId · search — Logrr</PageTitle>
 
@@ -60,7 +61,13 @@
                 <tr>
                     <td class="mono-sm nowrap">@e.Timestamp.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</td>
                     <td><LevelChip Level="e.Level" /></td>
-                    <td class="truncate" style="max-width:560px">@e.Message</td>
+                    <td class="truncate" style="max-width:560px">
+                        @e.Message
+                        @if (e.EventType is { } et && _tickets.TryGetValue(et, out var url))
+                        {
+                            <a class="badge accent" style="margin-left:6px" href="@url" target="_blank" @onclick:stopPropagation="true">🎫 ticket</a>
+                        }
+                    </td>
                     <td class="text-right"><a href="@($"/apps/{AppId}/events/{e.Id}")">Detail →</a></td>
                 </tr>
             }
@@ -83,8 +90,13 @@
     private string? _cursor, _error;
     private int _partitions;
     private readonly List<LogEventDto> _events = new();
+    private IReadOnlyDictionary<long, string> _tickets = new Dictionary<long, string>();
 
-    protected override void OnInitialized() => Run();
+    protected override void OnInitialized()
+    {
+        _tickets = TicketLinks.TicketUrlsByEventType(AppId);
+        Run();
+    }
 
     private void Run()
     {

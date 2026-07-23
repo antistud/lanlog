@@ -67,6 +67,8 @@ public sealed record Delivery
     public string? RuleId { get; init; }
     public string? AppId { get; init; }
     public DeliverySource Source { get; init; }
+    /// <summary>Event-type hash of the triggering event, propagated to the ticket link.</summary>
+    public long? EventType { get; init; }
     public DateTimeOffset CreatedUtc { get; init; }
     public int Attempt { get; init; }
     public DateTimeOffset? NextAttemptUtc { get; init; }

@@ -36,7 +36,7 @@ public sealed class ManualTicketService(
             BaseUrl = options.PublicBaseUrl,
         };
 
-        return Enqueue(destination, ctx, DeliverySource.Manual, appId);
+        return Enqueue(destination, ctx, DeliverySource.Manual, appId, ev?.EventType);
     }
 
     /// <summary>Send a synthetic event through the full template + transport path.</summary>
@@ -69,10 +69,10 @@ public sealed class ManualTicketService(
             BaseUrl = options.PublicBaseUrl,
         };
 
-        return Enqueue(destination, ctx, DeliverySource.Test, appId: null);
+        return Enqueue(destination, ctx, DeliverySource.Test, appId: null, sample.EventType);
     }
 
-    private SubmitResult Enqueue(Destination destination, WebhookContext ctx, DeliverySource source, string? appId)
+    private SubmitResult Enqueue(Destination destination, WebhookContext ctx, DeliverySource source, string? appId, long? eventType)
     {
         var now = clock();
         var rendered = WebhookRenderer.Render(destination.BodyTemplate, ctx, destination.IsJson);
@@ -84,6 +84,7 @@ public sealed class ManualTicketService(
             DestinationId = destination.Id,
             AppId = appId,
             Source = source,
+            EventType = eventType,
             CreatedUtc = now,
             Attempt = 0,
             NextAttemptUtc = now,
