@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Override the repo-wide net10.0 default: the client targets netstandard2.0 so it
+         works everywhere from .NET Framework 4.6.1 through .NET 10. -->
+    <TargetFramework></TargetFramework>
+    <TargetFrameworks>netstandard2.0</TargetFrameworks>
+
+    <!-- Package metadata -->
+    <PackageId>Logrr.Client</PackageId>
+    <Version>1.0.0</Version>
+    <Authors>antistud</Authors>
+    <Description>Client for shipping structured logs to a Logrr server. Includes a batching ingest client and a Microsoft.Extensions.Logging provider (AddLogrr).</Description>
+    <PackageTags>logging;logrr;serilog;clef;seq;structured-logging</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <RepositoryUrl>https://github.com/antistud/lanlog</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageProjectUrl>https://github.com/antistud/lanlog</PackageProjectUrl>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+    <PackageReference Include="System.Text.Json" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Logrr.Tests" />
+  </ItemGroup>
+
+</Project>

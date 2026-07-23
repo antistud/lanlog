@@ -16,6 +16,7 @@ Full design in [`docs/SPEC.md`](docs/SPEC.md); IIS install in [`docs/SETUP.md`](
 | `Logrr.Realtime` | broker, subscriptions, frame batching, backpressure |
 | `Logrr.Notify` | rule engine, dedupe/threshold/cooldown, delivery queue, dispatcher |
 | `Logrr.Server` | ASP.NET Core host, endpoints, SignalR hub, Blazor UI, bootstrap |
+| `Logrr.Client` | NuGet client — batching ingest client + `Microsoft.Extensions.Logging` provider (`netstandard2.0`) |
 
 ## Build & test
 
@@ -44,6 +45,21 @@ curl -X POST http://localhost:5199/api/events/raw \
   -H "Content-Type: application/vnd.serilog.clef" \
   --data-binary '{"@t":"2026-07-23T14:02:11Z","@mt":"Payment {Amount} failed","@l":"Error","Amount":49.99}'
 ```
+
+## Ingesting from other projects
+
+Add the `Logrr.Client` package and wire it into any `Microsoft.Extensions.Logging` app:
+
+```csharp
+builder.Logging.AddLogrr("https://logrr.internal", "lg_billing_...");
+```
+
+Message templates and structured properties are preserved end to end. It batches off the
+calling thread and is fire-and-forget (a Logrr outage never blocks your app). There's also
+a direct `LogrrClient` for apps not using MEL. See `src/Logrr.Client/README.md`. If you
+already use `Serilog.Sinks.Seq`, you can point it at Logrr instead and skip the package.
+
+Build the package with `dotnet pack src/Logrr.Client -c Release`.
 
 ## Implementation status
 

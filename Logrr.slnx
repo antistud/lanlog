@@ -1,5 +1,6 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="src/Logrr.Client/Logrr.Client.csproj" />
     <Project Path="src/Logrr.Contracts/Logrr.Contracts.csproj" />
     <Project Path="src/Logrr.Core/Logrr.Core.csproj" />
     <Project Path="src/Logrr.Notify/Logrr.Notify.csproj" />

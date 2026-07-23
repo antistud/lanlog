@@ -78,6 +78,36 @@ public class ServerIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task LogrrClient_package_ships_events_end_to_end()
+    {
+        var httpClient = _factory.CreateClient();
+        using var logrr = new Logrr.Client.LogrrClient(new Logrr.Client.LogrrClientOptions
+        {
+            Endpoint = httpClient.BaseAddress!.ToString().TrimEnd('/'),
+            ApiKey = _secret,
+        }, httpClient);
+
+        logrr.Log(Logrr.Client.LogrrLevel.Error, "Package ship {Amount} for {UserId}",
+            new InvalidOperationException("boom"),
+            new Dictionary<string, object?> { ["Amount"] = 12.5, ["UserId"] = 99L });
+        await logrr.FlushAsync();
+
+        var reader = Client();
+        EventQueryResponse? page = null;
+        for (var i = 0; i < 30 && (page is null || page.Events.Count == 0); i++)
+        {
+            await Task.Delay(200);
+            page = await reader.GetFromJsonAsync<EventQueryResponse>("/api/v1/apps/billing/events?limit=10");
+        }
+
+        Assert.NotNull(page);
+        var ev = Assert.Single(page!.Events);
+        Assert.Equal(LogLevel.Error, ev.Level);
+        Assert.Equal("Package ship {Amount} for {UserId}", ev.Template);
+        Assert.Contains("boom", ev.Exception);
+    }
+
+    [Fact]
     public async Task Ingest_without_token_is_unauthorized()
     {
         var client = _factory.CreateClient(); // no key
