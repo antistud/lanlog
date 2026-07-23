@@ -1,0 +1,84 @@
+@inject NavigationManager Nav
+@inject IJSRuntime JS
+
+<div class="card">
+    <div class="card-head">
+        <div>
+            <h3>Send logs to this app</h3>
+            <div class="meta">Point any .NET app (or anything that speaks HTTP) at this server.</div>
+        </div>
+        <div class="flex gap-2">
+            @foreach (var t in Tabs)
+            {
+                <button class="btn sm @(_tab == t ? "primary" : "ghost")" @onclick="() => SelectTab(t)">@t</button>
+            }
+        </div>
+    </div>
+
+    <div class="field" style="margin-bottom:var(--sp-3)">
+        <label>1 · Create a token</label>
+        <span class="hint">
+            Go to the <a href="@($"/apps/{AppId}/tokens")">Tokens</a> tab and generate an <strong>Ingest</strong>
+            token. It looks like <code>lg_@(AppId)_…</code> and is shown once. Paste it below in place of
+            <code>YOUR_TOKEN</code>.
+        </span>
+    </div>
+
+    <div class="field" style="margin-bottom:0">
+        <label>2 · @_tab</label>
+        <div style="position:relative">
+            <button class="btn sm" style="position:absolute; top:8px; right:8px; z-index:1" @onclick="Copy">
+                @(_copied ? "✓ Copied" : "Copy")
+            </button>
+            <pre class="code" style="padding-right:88px">@Snippet</pre>
+        </div>
+        @if (_tab == ".NET")
+        {
+            <span class="hint">Templates and structured properties are preserved — <code>logger.LogError("Order {Id} failed", id)</code> arrives with <code>Id</code> as a field.</span>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public string AppId { get; set; } = "";
+
+    private static readonly string[] Tabs = [".NET", "Serilog", "curl"];
+    private string _tab = ".NET";
+    private bool _copied;
+
+    private string Endpoint => Nav.BaseUri.TrimEnd('/');
+    private string Token => $"lg_{AppId}_YOUR_TOKEN";
+
+    private string Snippet => _tab switch
+    {
+        ".NET" =>
+$@"// dotnet add package Logrr.Client
+builder.Logging.AddLogrr(
+    ""{Endpoint}"",
+    ""{Token}"");",
+
+        "Serilog" =>
+$@"// dotnet add package Serilog.Sinks.Seq
+Log.Logger = new LoggerConfiguration()
+    .WriteTo.Seq(""{Endpoint}"", apiKey: ""{Token}"")
+    .CreateLogger();",
+
+        _ =>
+$@"curl -X POST {Endpoint}/api/events/raw \
+  -H ""X-Logrr-ApiKey: {Token}"" \
+  -H ""Content-Type: application/vnd.serilog.clef"" \
+  --data-binary '{{""@t"":""2026-07-23T14:02:11Z"",""@mt"":""Hello from {AppId}"",""@l"":""Information""}}'",
+    };
+
+    private void SelectTab(string tab)
+    {
+        _tab = tab;
+        _copied = false;
+    }
+
+    private async Task Copy()
+    {
+        await JS.InvokeVoidAsync("logrrCopy", Snippet);
+        _copied = true;
+    }
+}
