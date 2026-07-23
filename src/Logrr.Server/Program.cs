@@ -18,6 +18,13 @@ using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Serve static web assets — including the framework's _framework/blazor.web.js, which the
+// interactive Blazor circuit needs — in every environment. Without this the host only wires
+// it up in Development, so running the build output as Production (e.g.
+// `dotnet run --no-launch-profile`) silently loses interactivity. Harmless once published,
+// where the assets are copied into wwwroot.
+builder.WebHost.UseStaticWebAssets();
+
 // ---- Data path resolution (SPEC §2): env → appsettings → %ProgramData% (never in app folder).
 var dataPath = DataPath.Resolve(builder.Configuration, builder.Environment.ContentRootPath);
 var paths = new StoragePaths(dataPath);
