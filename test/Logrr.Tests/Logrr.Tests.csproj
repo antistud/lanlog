@@ -7,6 +7,7 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" />
     <PackageReference Include="xunit" />
     <PackageReference Include="xunit.runner.visualstudio" />
   </ItemGroup>
@@ -17,6 +18,7 @@
     <ProjectReference Include="..\..\src\Logrr.Storage\Logrr.Storage.csproj" />
     <ProjectReference Include="..\..\src\Logrr.Realtime\Logrr.Realtime.csproj" />
     <ProjectReference Include="..\..\src\Logrr.Notify\Logrr.Notify.csproj" />
+    <ProjectReference Include="..\..\src\Logrr.Server\Logrr.Server.csproj" />
   </ItemGroup>
 
 </Project>

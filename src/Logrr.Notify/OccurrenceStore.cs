@@ -41,6 +41,16 @@ public sealed class OccurrenceStore(ControlDatabase db)
         cmd.ExecuteNonQuery();
     }
 
+    /// <summary>Clear all occurrences for a rule (manual reset-cooldown, SPEC §10.8).</summary>
+    public int ResetForRule(string ruleId)
+    {
+        using var conn = db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "DELETE FROM rule_occurrences WHERE rule_id = $r;";
+        cmd.P("$r", ruleId);
+        return cmd.ExecuteNonQuery();
+    }
+
     /// <summary>Prune stale rollups (SPEC §10.4: after max(cooldown, window) × 3).</summary>
     public int PruneOlderThan(DateTimeOffset cutoff)
     {

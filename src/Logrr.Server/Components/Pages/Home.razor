@@ -1,0 +1,62 @@
+@page "/"
+@attribute [Authorize]
+@inject Logrr.Storage.Control.AppStore Apps
+@inject Logrr.Storage.StatsReader Stats
+
+<PageTitle>Apps — Logrr</PageTitle>
+
+<div class="wrap">
+    <h1>Apps</h1>
+    @if (_apps.Count == 0)
+    {
+        <div class="card">
+            <p>No apps yet.</p>
+            <p class="muted">Create one via <code>POST /api/v1/apps</code>, then point a Serilog Seq sink at
+            <code>/api/events/raw</code> with the app's token.</p>
+        </div>
+    }
+    else
+    {
+        <table>
+            <thead>
+                <tr><th>App</th><th>Events</th><th>Errors (all)</th><th>Storage</th><th>Last event</th><th></th></tr>
+            </thead>
+            <tbody>
+                @foreach (var app in _apps)
+                {
+                    var s = _stats.GetValueOrDefault(app.Id);
+                    <tr>
+                        <td><strong>@app.Name</strong> <span class="muted">@app.Id</span></td>
+                        <td>@(s?.TotalEvents ?? 0)</td>
+                        <td>@((s?.CountByLevel.GetValueOrDefault("Error") ?? 0) + (s?.CountByLevel.GetValueOrDefault("Fatal") ?? 0))</td>
+                        <td>@FormatBytes(s?.StorageBytes ?? 0)</td>
+                        <td class="muted">@(s?.LastEventUtc?.ToString("u") ?? "—")</td>
+                        <td><a href="/apps/@app.Id/tail">Live tail →</a></td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+</div>
+
+@code {
+    private IReadOnlyList<Logrr.Storage.Control.AppRecord> _apps = [];
+    private readonly Dictionary<string, Logrr.Contracts.AppStatsDto> _stats = new();
+
+    protected override void OnInitialized()
+    {
+        _apps = Apps.List();
+        foreach (var app in _apps)
+        {
+            _stats[app.Id] = Stats.GetStats(app.Id, DateTimeOffset.UtcNow);
+        }
+    }
+
+    private static string FormatBytes(long bytes) => bytes switch
+    {
+        >= 1 << 30 => $"{bytes / (double)(1 << 30):0.0} GB",
+        >= 1 << 20 => $"{bytes / (double)(1 << 20):0.0} MB",
+        >= 1 << 10 => $"{bytes / (double)(1 << 10):0.0} KB",
+        _ => $"{bytes} B",
+    };
+}

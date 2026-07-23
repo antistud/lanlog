@@ -1,0 +1,120 @@
+@page "/apps/{AppId}/tail"
+@attribute [Authorize]
+@rendermode InteractiveServer
+@implements IDisposable
+@inject Logrr.Realtime.RealtimeBroker Broker
+
+<PageTitle>@AppId — live tail</PageTitle>
+
+<div class="wrap">
+    <h1>Live tail — @AppId</h1>
+
+    <div class="card" style="display:flex; gap:1rem; align-items:center; flex-wrap:wrap">
+        <label>Min level
+            <select @bind="_minLevel" @bind:after="Resubscribe">
+                @foreach (var l in Levels) { <option value="@l">@l</option> }
+            </select>
+        </label>
+        <label>Filter
+            <input @bind="_filter" @bind:after="Resubscribe" placeholder="Level >= Error and UserId = 1042" style="width:340px" />
+        </label>
+        <button @onclick="TogglePause">@(_paused ? "Resume" : "Pause")</button>
+        <button @onclick="Clear">Clear</button>
+        <span style="flex:1"></span>
+        <span class="muted">@_matchedTotal matched · @_rendered rendered</span>
+        @if (_droppedTotal > 0)
+        {
+            <span class="pill">@_droppedTotal not shown (rate limited)</span>
+        }
+        @if (_error is not null)
+        {
+            <span style="color:#fca5a5">@_error</span>
+        }
+    </div>
+
+    <table>
+        <thead><tr><th style="width:190px">Time</th><th style="width:90px">Level</th><th>Message</th></tr></thead>
+        <tbody>
+            @foreach (var e in _rows)
+            {
+                <tr>
+                    <td class="muted">@e.Timestamp.ToString("HH:mm:ss.fff")</td>
+                    <td><span class="lvl lvl-@e.Level">@e.Level</span></td>
+                    <td>@e.Message</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+</div>
+
+@code {
+    [Parameter] public string AppId { get; set; } = "";
+
+    private static readonly string[] Levels = ["Verbose", "Debug", "Information", "Warning", "Error", "Fatal"];
+    private const int MaxRows = 500;
+
+    private readonly LinkedList<Logrr.Contracts.LogEventDto> _rows = new();
+    private string _minLevel = "Debug";
+    private string _filter = "";
+    private bool _paused;
+    private string? _subscriptionId;
+    private string? _error;
+    private int _matchedTotal;
+    private int _rendered;
+    private int _droppedTotal;
+
+    protected override void OnInitialized() => Subscribe();
+
+    private void Subscribe()
+    {
+        _error = null;
+        try
+        {
+            _subscriptionId = Broker.Subscribe(
+                new Logrr.Contracts.SubscribeRequest { AppId = AppId, MinLevel = _minLevel, Filter = string.IsNullOrWhiteSpace(_filter) ? null : _filter },
+                userId: null,
+                sink: OnFrame);
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+    }
+
+    private Task OnFrame(Logrr.Contracts.Frame frame)
+    {
+        return InvokeAsync(() =>
+        {
+            _droppedTotal += frame.Dropped;
+            if (frame.Rate is { } r) { _matchedTotal += r.Matched; }
+
+            foreach (var e in frame.Events)
+            {
+                _rows.AddFirst(e);
+                _rendered++;
+                while (_rows.Count > MaxRows) { _rows.RemoveLast(); }
+            }
+            StateHasChanged();
+        });
+    }
+
+    private void Resubscribe()
+    {
+        if (_subscriptionId is not null) { Broker.Unsubscribe(_subscriptionId); }
+        Subscribe();
+    }
+
+    private void TogglePause()
+    {
+        if (_subscriptionId is null) { return; }
+        _paused = !_paused;
+        if (_paused) { Broker.Pause(_subscriptionId); } else { Broker.Resume(_subscriptionId); }
+    }
+
+    private void Clear() => _rows.Clear();
+
+    public void Dispose()
+    {
+        if (_subscriptionId is not null) { Broker.Unsubscribe(_subscriptionId); }
+    }
+}

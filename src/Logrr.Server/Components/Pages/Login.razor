@@ -1,0 +1,28 @@
+@page "/login"
+@layout Logrr.Server.Components.Layout.MainLayout
+@attribute [AllowAnonymous]
+
+<PageTitle>Sign in — Logrr</PageTitle>
+
+<div class="wrap" style="max-width:420px">
+    <div class="card">
+        <h2>Sign in</h2>
+        @if (Error)
+        {
+            <p style="color:#fca5a5">Invalid username or password.</p>
+        }
+        <form method="post" action="/auth/login">
+            <input type="hidden" name="returnUrl" value="@ReturnUrl" />
+            <p><input name="username" placeholder="Username" autofocus style="width:100%" /></p>
+            <p><input name="password" type="password" placeholder="Password" style="width:100%" /></p>
+            <button type="submit">Sign in</button>
+        </form>
+        <p class="muted">First run? See <code>FIRST-RUN-CREDENTIALS.txt</code> in the data directory.</p>
+    </div>
+</div>
+
+@code {
+    [SupplyParameterFromQuery] public string? ReturnUrl { get; set; }
+    [SupplyParameterFromQuery(Name = "error")] public int? ErrorFlag { get; set; }
+    private bool Error => ErrorFlag == 1;
+}

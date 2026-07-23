@@ -1,0 +1,19 @@
+@inherits LayoutComponentBase
+
+<header class="top">
+    <span class="brand">▚ Logrr</span>
+    <a href="/">Apps</a>
+    <span style="flex:1"></span>
+    <AuthorizeView>
+        <Authorized>
+            <span class="muted">@context.User.Identity?.Name</span>
+            <form method="post" action="/auth/logout" style="display:inline">
+                <button type="submit">Sign out</button>
+            </form>
+        </Authorized>
+    </AuthorizeView>
+</header>
+
+<main>
+    @Body
+</main>
