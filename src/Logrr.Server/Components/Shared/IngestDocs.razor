@@ -34,7 +34,16 @@
         </div>
         @if (_tab == ".NET")
         {
-            <span class="hint">Templates and structured properties are preserved — <code>logger.LogError("Order {Id} failed", id)</code> arrives with <code>Id</code> as a field.</span>
+            <span class="hint">
+                Needs the <code>Logrr.Client</code> package on a feed you can restore from — it isn't on a
+                public feed yet. No package? Use the <strong>Serilog</strong> tab (public package) or add a
+                project reference to <code>src/Logrr.Client</code>. Templates and structured properties are
+                preserved — <code>logger.LogError("Order {Id} failed", id)</code> arrives with <code>Id</code> as a field.
+            </span>
+        }
+        else if (_tab == "Serilog")
+        {
+            <span class="hint"><code>Serilog.Sinks.Seq</code> is public — this one works with no extra setup. Add <code>builder.Host.UseSerilog()</code> so your <code>ILogger&lt;T&gt;</code> logs flow through too.</span>
         }
     </div>
 </div>
@@ -52,7 +61,9 @@
     private string Snippet => _tab switch
     {
         ".NET" =>
-$@"// dotnet add package Logrr.Client
+$@"// Requires the Logrr.Client package (see note below).
+using Logrr.Client.Logging;
+
 builder.Logging.AddLogrr(
     ""{Endpoint}"",
     ""{Token}"");",
