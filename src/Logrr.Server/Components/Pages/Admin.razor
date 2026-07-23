@@ -1,6 +1,8 @@
 @page "/admin"
 @attribute [Authorize(Roles = "Admin")]
 @rendermode InteractiveServer
+@implements IDisposable
+@inject Logrr.Server.LiveSignals Signals
 @inject Logrr.Storage.IngestPipeline Ingest
 @inject Logrr.Realtime.RealtimeBroker Broker
 @inject Logrr.Notify.DeliveryStore Deliveries
@@ -81,7 +83,33 @@
     private string _uName = "", _uPass = "", _uRole = "User";
     private string? _uErr;
 
-    protected override void OnInitialized() => Refresh();
+    private DateTimeOffset _lastLoad;
+
+    protected override void OnInitialized()
+    {
+        Refresh();
+        Signals.AppActivity += OnActivity;
+        Signals.DeliveriesChanged += OnDeliveries;
+    }
+
+    private void OnActivity(string _) => Throttled();
+    private void OnDeliveries() => Throttled();
+
+    private void Throttled()
+    {
+        if (DateTimeOffset.UtcNow - _lastLoad < TimeSpan.FromSeconds(1))
+        {
+            return;
+        }
+        _lastLoad = DateTimeOffset.UtcNow;
+        InvokeAsync(() => { Refresh(); StateHasChanged(); });
+    }
+
+    public void Dispose()
+    {
+        Signals.AppActivity -= OnActivity;
+        Signals.DeliveriesChanged -= OnDeliveries;
+    }
 
     private void Refresh()
     {

@@ -4,6 +4,7 @@
 @implements IDisposable
 @inject Logrr.Storage.Control.AppStore Apps
 @inject Logrr.Storage.StatsReader Stats
+@inject Logrr.Server.LiveSignals Signals
 
 <PageTitle>Apps — Logrr</PageTitle>
 
@@ -107,11 +108,26 @@ else
     private LogLevel _minLevel = LogLevel.Verbose;
     private string? _error;
 
+    private DateTimeOffset _lastLoad;
+
     protected override void OnInitialized()
     {
         Load();
+        // Push: refresh when any app receives events (leading-edge throttled to 1/sec).
+        Signals.AppActivity += OnActivity;
+        // Slow fallback so relative "last seen" times stay fresh on a quiet system.
         _timer = new System.Threading.Timer(_ => InvokeAsync(() => { Load(); StateHasChanged(); }),
-            null, TimeSpan.FromSeconds(8), TimeSpan.FromSeconds(8));
+            null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
+    }
+
+    private void OnActivity(string appId)
+    {
+        if (DateTimeOffset.UtcNow - _lastLoad < TimeSpan.FromSeconds(1))
+        {
+            return;
+        }
+        _lastLoad = DateTimeOffset.UtcNow;
+        InvokeAsync(() => { Load(); StateHasChanged(); });
     }
 
     private void Load()
@@ -176,5 +192,9 @@ else
         _ => $"{bytes} B",
     };
 
-    public void Dispose() => _timer?.Dispose();
+    public void Dispose()
+    {
+        Signals.AppActivity -= OnActivity;
+        _timer?.Dispose();
+    }
 }

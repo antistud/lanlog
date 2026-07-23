@@ -4,6 +4,7 @@
 @implements IDisposable
 @inject Logrr.Realtime.RealtimeBroker Broker
 @inject Logrr.Notify.TicketLinkStore TicketLinks
+@inject Logrr.Storage.EventReader Reader
 
 <PageTitle>@AppId · live tail — Logrr</PageTitle>
 
@@ -143,13 +144,40 @@
     private void Subscribe()
     {
         _error = null;
+        _rows.Clear();
         try
         {
             _subscriptionId = Broker.Subscribe(
                 new SubscribeRequest { AppId = AppId, MinLevel = _minLevel, Filter = string.IsNullOrWhiteSpace(_filter) ? null : _filter },
                 userId: null, sink: OnFrame);
         }
-        catch (Exception ex) { _error = ex.Message; }
+        catch (Exception ex) { _error = ex.Message; return; }
+
+        Backfill();
+    }
+
+    // Seed the tail with recent history from storage so (re)connecting isn't a blank screen
+    // and a brief disconnect doesn't leave a hole (SPEC §8.5).
+    private void Backfill()
+    {
+        try
+        {
+            var page = Reader.Query(new Logrr.Storage.EventQuery
+            {
+                AppId = AppId,
+                MinLevel = Logrr.Core.LevelMap.TryParse(_minLevel, out var lvl) ? lvl : null,
+                Filter = string.IsNullOrWhiteSpace(_filter) ? null : _filter,
+                Limit = 100,
+            });
+            foreach (var e in page.Events) // newest-first
+            {
+                _rows.AddLast(new Row { Event = e });
+            }
+        }
+        catch
+        {
+            // Backfill is best-effort; the live stream still works without it.
+        }
     }
 
     private Task OnFrame(Frame frame) => InvokeAsync(() =>

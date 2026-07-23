@@ -103,6 +103,7 @@ builder.Services.AddSingleton<RetentionMaintenance>();
 // ---- Realtime ----
 builder.Services.AddSingleton<RealtimeBroker>();
 builder.Services.AddSingleton<ConnectionSubscriptions>();
+builder.Services.AddSingleton<LiveSignals>();
 
 // ---- Notify ----
 builder.Services.AddSingleton<ISecretProtector, DataProtectionSecretProtector>();
@@ -136,6 +137,7 @@ builder.Services.AddSingleton(sp =>
     var appStore = sp.GetRequiredService<AppStore>();
     var broker = sp.GetRequiredService<RealtimeBroker>();
     var rules = sp.GetRequiredService<RuleEngine>();
+    var signals = sp.GetRequiredService<LiveSignals>();
     var log = sp.GetRequiredService<ILoggerFactory>().CreateLogger("Ingest");
     return new IngestPipeline(
         pm, storageOptions,
@@ -144,6 +146,7 @@ builder.Services.AddSingleton(sp =>
         {
             broker.Publish(commit.AppId, commit.Day, commit.Rows);
             rules.Evaluate(commit);
+            signals.RaiseAppActivity(commit.AppId);
         },
         (appId, ex) => log.LogError(ex, "Ingest write failed for app {App}", appId));
 });

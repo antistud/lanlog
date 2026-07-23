@@ -4,6 +4,12 @@
 
 <AuthorizeView>
     <Authorized>
+        @if (_mustChange)
+        {
+            <div class="main">@Body</div>
+        }
+        else
+        {
         <div class="app">
             <aside class="sidebar">
                 <div class="brand"><span class="glyph">▚</span> Logrr</div>
@@ -57,6 +63,7 @@
                 </div>
             </div>
         </div>
+        }
     </Authorized>
     <NotAuthorized>
         @Body
@@ -67,6 +74,7 @@
     [CascadingParameter] private Task<AuthenticationState>? AuthState { get; set; }
 
     private string? _appId;
+    private bool _mustChange;
 
     protected override void OnInitialized()
     {
@@ -88,7 +96,8 @@
     {
         if (AuthState is null) { return; }
         var state = await AuthState;
-        if (!state.User.HasClaim(Logrr.Server.Auth.AuthEndpoints.MustChangeClaim, "1")) { return; }
+        _mustChange = state.User.HasClaim(Logrr.Server.Auth.AuthEndpoints.MustChangeClaim, "1");
+        if (!_mustChange) { return; }
 
         var path = new Uri(Nav.Uri).AbsolutePath;
         if (!path.Equals("/account/password", StringComparison.OrdinalIgnoreCase))

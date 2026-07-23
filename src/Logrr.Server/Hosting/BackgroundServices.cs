@@ -4,10 +4,40 @@ using Logrr.Storage.Control;
 
 namespace Logrr.Server.Hosting;
 
-/// <summary>Runs the webhook delivery dispatcher for the app's lifetime (SPEC §10.5).</summary>
-public sealed class DispatcherService(DeliveryDispatcher dispatcher) : BackgroundService
+/// <summary>
+/// Runs the webhook delivery dispatcher for the app's lifetime (SPEC §10.5) and pushes a
+/// live signal whenever the queue's pending depth changes so the UI refreshes without
+/// polling.
+/// </summary>
+public sealed class DispatcherService(DeliveryDispatcher dispatcher, DeliveryStore deliveries, LiveSignals signals)
+    : BackgroundService
 {
-    protected override Task ExecuteAsync(CancellationToken stoppingToken) => dispatcher.RunAsync(stoppingToken);
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+        var lastPending = -1;
+        do
+        {
+            try
+            {
+                await dispatcher.ProcessDueAsync(stoppingToken).ConfigureAwait(false);
+                var pending = deliveries.CountByStatus(DeliveryStatus.Pending);
+                if (pending != lastPending)
+                {
+                    lastPending = pending;
+                    signals.RaiseDeliveriesChanged();
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+            catch
+            {
+                // A bad round must not kill the dispatcher; next tick retries.
+            }
+        } while (await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false));
+    }
 }
 
 /// <summary>

@@ -1,8 +1,10 @@
 @page "/deliveries"
 @attribute [Authorize(Roles = "Admin")]
 @rendermode InteractiveServer
+@implements IDisposable
 @inject Logrr.Notify.DeliveryStore Store
 @inject Logrr.Notify.DestinationStore Destinations
+@inject Logrr.Server.LiveSignals Signals
 
 <PageTitle>Deliveries — Logrr</PageTitle>
 
@@ -79,11 +81,26 @@
     private Dictionary<string, string> _names = new();
     private int _pending, _delivered, _failed, _dead;
 
+    private DateTimeOffset _lastLoad;
+
     protected override void OnInitialized()
     {
         _names = Destinations.List().ToDictionary(d => d.Id, d => d.Name);
         Load();
+        Signals.DeliveriesChanged += OnChanged;
     }
+
+    private void OnChanged()
+    {
+        if (DateTimeOffset.UtcNow - _lastLoad < TimeSpan.FromSeconds(1))
+        {
+            return;
+        }
+        _lastLoad = DateTimeOffset.UtcNow;
+        InvokeAsync(() => { Load(); StateHasChanged(); });
+    }
+
+    public void Dispose() => Signals.DeliveriesChanged -= OnChanged;
 
     private void Load()
     {
