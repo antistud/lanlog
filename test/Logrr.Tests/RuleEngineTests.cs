@@ -61,7 +61,7 @@ public class RuleEngineTests : IDisposable
         AddRule();
         Engine().Evaluate(Batch(1000)); // a thousand identical NREs
 
-        Assert.Equal(1, _h.Deliveries.Query(null, null, null, null).Count);
+        Assert.Single(_h.Deliveries.Query(null, null, null, null));
     }
 
     [Fact]

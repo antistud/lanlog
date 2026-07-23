@@ -8,7 +8,6 @@ namespace Logrr.Storage;
 /// </summary>
 public sealed class RetentionMaintenance(
     PartitionManager partitions,
-    StatsReader stats,
     StorageOptions options,
     Action<string>? warn = null)
 {
