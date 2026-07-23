@@ -1,0 +1,127 @@
+using System.Text.Json;
+using Logrr.Storage.Control;
+using Microsoft.Data.Sqlite;
+
+namespace Logrr.Notify;
+
+/// <summary>CRUD + circuit-breaker state for the <c>destinations</c> table (SPEC §10.1).</summary>
+public sealed class DestinationStore(ControlDatabase db)
+{
+    public void Create(Destination d)
+    {
+        using var conn = db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            INSERT INTO destinations (id, name, url, method, content_type, headers,
+              auth_mode, auth_secret, auth_header_name, body_template,
+              ticket_id_path, ticket_url_path, timeout_seconds, max_attempts,
+              rate_limit_per_hour, is_enabled, consecutive_failures, circuit_open_until_utc, created_utc)
+            VALUES ($id, $name, $url, $method, $ct, $headers,
+              $auth, $secret, $authHeader, $body,
+              $idPath, $urlPath, $timeout, $maxAtt,
+              $rate, $en, 0, NULL, $created);
+            """;
+        cmd.P("$id", d.Id);
+        cmd.P("$name", d.Name);
+        cmd.P("$url", d.Url);
+        cmd.P("$method", d.Method);
+        cmd.P("$ct", d.ContentType);
+        cmd.P("$headers", JsonSerializer.Serialize(d.Headers));
+        cmd.P("$auth", (int)d.AuthMode);
+        cmd.P("$secret", (object?)d.AuthSecret);
+        cmd.P("$authHeader", d.AuthHeaderName);
+        cmd.P("$body", d.BodyTemplate);
+        cmd.P("$idPath", d.TicketIdPath);
+        cmd.P("$urlPath", d.TicketUrlPath);
+        cmd.P("$timeout", d.TimeoutSeconds);
+        cmd.P("$maxAtt", d.MaxAttempts);
+        cmd.P("$rate", d.RateLimitPerHour);
+        cmd.P("$en", d.IsEnabled ? 1 : 0);
+        cmd.P("$created", d.CreatedUtc.Ms());
+        cmd.ExecuteNonQuery();
+    }
+
+    public Destination? Get(string id)
+    {
+        using var conn = db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT * FROM destinations WHERE id = $id;";
+        cmd.P("$id", id);
+        using var r = cmd.ExecuteReader();
+        return r.Read() ? Map(r) : null;
+    }
+
+    public IReadOnlyList<Destination> List()
+    {
+        using var conn = db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT * FROM destinations ORDER BY name;";
+        using var r = cmd.ExecuteReader();
+        var list = new List<Destination>();
+        while (r.Read()) list.Add(Map(r));
+        return list;
+    }
+
+    /// <summary>Record a failed attempt; open the circuit after the threshold (SPEC §10.5).</summary>
+    public void RecordFailure(string id, DateTimeOffset now)
+    {
+        using var conn = db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            UPDATE destinations
+            SET consecutive_failures = consecutive_failures + 1,
+                circuit_open_until_utc = CASE
+                  WHEN consecutive_failures + 1 >= $threshold THEN $openUntil
+                  ELSE circuit_open_until_utc END
+            WHERE id = $id;
+            """;
+        cmd.P("$threshold", NotifyOptions.CircuitFailureThreshold);
+        cmd.P("$openUntil", now.Add(NotifyOptions.CircuitOpenDuration).Ms());
+        cmd.P("$id", id);
+        cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>Reset failure count and close the circuit on a successful delivery.</summary>
+    public void RecordSuccess(string id)
+    {
+        using var conn = db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "UPDATE destinations SET consecutive_failures = 0, circuit_open_until_utc = NULL WHERE id = $id;";
+        cmd.P("$id", id);
+        cmd.ExecuteNonQuery();
+    }
+
+    public void Delete(string id)
+    {
+        using var conn = db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "DELETE FROM destinations WHERE id = $id;";
+        cmd.P("$id", id);
+        cmd.ExecuteNonQuery();
+    }
+
+    internal static Destination Map(SqliteDataReader r) => new()
+    {
+        Id = r.GetString(r.GetOrdinal("id")),
+        Name = r.GetString(r.GetOrdinal("name")),
+        Url = r.GetString(r.GetOrdinal("url")),
+        Method = r.GetString(r.GetOrdinal("method")),
+        ContentType = r.GetString(r.GetOrdinal("content_type")),
+        Headers = r.Str("headers") is { } h && h.Length > 0
+            ? JsonSerializer.Deserialize<Dictionary<string, string>>(h) ?? new()
+            : new Dictionary<string, string>(),
+        AuthMode = (AuthMode)r.GetInt32(r.GetOrdinal("auth_mode")),
+        AuthSecret = r.IsDBNull(r.GetOrdinal("auth_secret")) ? null : (byte[])r["auth_secret"],
+        AuthHeaderName = r.Str("auth_header_name"),
+        BodyTemplate = r.GetString(r.GetOrdinal("body_template")),
+        TicketIdPath = r.Str("ticket_id_path"),
+        TicketUrlPath = r.Str("ticket_url_path"),
+        TimeoutSeconds = r.GetInt32(r.GetOrdinal("timeout_seconds")),
+        MaxAttempts = r.GetInt32(r.GetOrdinal("max_attempts")),
+        RateLimitPerHour = r.GetInt32(r.GetOrdinal("rate_limit_per_hour")),
+        IsEnabled = r.GetInt32(r.GetOrdinal("is_enabled")) != 0,
+        ConsecutiveFailures = r.GetInt32(r.GetOrdinal("consecutive_failures")),
+        CircuitOpenUntilUtc = r.ReadTsNull("circuit_open_until_utc"),
+        CreatedUtc = r.ReadTs("created_utc"),
+    };
+}
