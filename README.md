@@ -29,13 +29,27 @@ dotnet test test/Logrr.Tests/Logrr.Tests.csproj
 
 ## Run locally
 
+**Windows (PowerShell):**
+
+```powershell
+$env:LOGRR_DATA_PATH = "C:\logrr-data"
+$env:ASPNETCORE_URLS = "http://localhost:5199"
+dotnet run --project src/Logrr.Server --no-launch-profile
+```
+
+**Linux / macOS (bash):**
+
 ```bash
 LOGRR_DATA_PATH=/tmp/logrr ASPNETCORE_URLS=http://localhost:5199 \
   dotnet run --project src/Logrr.Server
 ```
 
+`--no-launch-profile` makes `ASPNETCORE_URLS` win over any local `launchSettings.json`.
+
 On first run it creates the data directory, seeds an `admin` account, and writes the
-password to `FIRST-RUN-CREDENTIALS.txt` in the data path.
+password to `FIRST-RUN-CREDENTIALS.txt` **in the data directory** — the path in
+`LOGRR_DATA_PATH` above, or `%ProgramData%\Logrr` (Windows) / `./data` (elsewhere) if you
+don't set it. Sign in as `admin` with that password.
 
 Send a log line (Seq-compatible CLEF) once you've created an app + token in the UI:
 
