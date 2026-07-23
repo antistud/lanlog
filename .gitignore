@@ -19,3 +19,5 @@ data/
 # Test results
 TestResults/
 *.trx
+.github/copilot-instructions.md
+src/Logrr.Server/Properties/launchSettings.json
