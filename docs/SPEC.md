@@ -259,7 +259,7 @@ production IIS box is worse than no log server.
 | `ExpiresUtc` / `RevokedUtc` | nullable |
 | `LastUsedUtc` | updated at most once a minute, out of band |
 
-**Format:** `lg_{appId}_{22 random base62}` — e.g. `lg_billing_7Kq2xR9mNp4vB1sT6wZaLd`.
+**Format:** `lg_{appId}_{22 random base62}` — e.g. `lg_myapp_xxxxxxxxxxxxxxxxxxxxxx`.
 The slug is a convenience for humans reading config files and is **not** trusted; lookup
 is by prefix, verification by constant-time hash compare. Shown once at creation.
 
@@ -284,7 +284,7 @@ Unrecognised level strings → Information, original preserved as `_rawLevel`.
 
 ```
 POST /api/events/raw?clef
-X-Logrr-ApiKey: lg_billing_7Kq2xR9mNp4vB1sT6wZaLd
+X-Logrr-ApiKey: lg_myapp_xxxxxxxxxxxxxxxxxxxxxx
 Content-Type: application/vnd.serilog.clef
 ```
 

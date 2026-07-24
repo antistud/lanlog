@@ -14,7 +14,7 @@ dotnet add package Logrr.Client
 One line in your logging setup:
 
 ```csharp
-builder.Logging.AddLogrr("https://logrr.internal", "lg_billing_7Kq2xR9mNp4vB1sT6wZaLd");
+builder.Logging.AddLogrr("https://logrr.internal", "lg_myapp_xxxxxxxxxxxxxxxxxxxxxx");
 ```
 
 Message templates and structured properties are preserved end to end:
@@ -30,7 +30,7 @@ Full options:
 builder.Logging.AddLogrr(o =>
 {
     o.Endpoint = "https://logrr.internal";
-    o.ApiKey = "lg_billing_...";
+    o.ApiKey = "lg_myapp_...";
     o.MinimumLevel = LogrrLevel.Information;
     o.BatchSizeLimit = 500;
     o.FlushInterval = TimeSpan.FromSeconds(2);
@@ -43,7 +43,7 @@ builder.Logging.AddLogrr(o =>
 using var client = new LogrrClient(new LogrrClientOptions
 {
     Endpoint = "https://logrr.internal",
-    ApiKey = "lg_billing_...",
+    ApiKey = "lg_myapp_...",
 });
 
 client.Log(LogrrLevel.Warning, "Cache miss for {Key}", properties:
