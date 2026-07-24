@@ -6,6 +6,13 @@ namespace Logrr.Server.Ingest;
 
 public static class IngestEndpoints
 {
+    /// <summary>
+    /// CORS policy applied to the ingest endpoints so browser code can post directly. Access is
+    /// still gated by the ingest token in a header (not cookies), so any origin is allowed by
+    /// default; set <c>Ingest:AllowedOrigins</c> to restrict it.
+    /// </summary>
+    public const string CorsPolicy = "logrr-ingest";
+
     public static void MapIngestEndpoints(this IEndpointRouteBuilder app, long maxRequestBytes)
     {
         // Seq-compatible CLEF endpoint (SPEC §6.1).
@@ -25,7 +32,7 @@ public static class IngestEndpoints
             var body = await reader.ReadToEndAsync();
             var result = ingest.IngestClef(body, authResult.Context!.App);
             return Results.Json(result, statusCode: StatusCodes.Status201Created);
-        });
+        }).RequireCors(CorsPolicy);
 
         // Plain-JSON endpoint for legacy clients (SPEC §6.2).
         app.MapPost("/api/v1/events", async (HttpContext http, TokenAuthenticator auth, IngestService ingest) =>
@@ -53,7 +60,7 @@ public static class IngestEndpoints
 
             var result = ingest.IngestPlain(root, authResult.Context!.App);
             return Results.Json(result, statusCode: StatusCodes.Status201Created);
-        });
+        }).RequireCors(CorsPolicy);
     }
 
     private static bool TooLarge(HttpContext http, long max) =>

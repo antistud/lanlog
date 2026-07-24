@@ -169,6 +169,23 @@ builder.Services.AddSignalR();
 builder.Services.AddRazorComponents().AddInteractiveServerComponents();
 builder.Services.AddCascadingAuthenticationState();
 
+// Let browser code post logs directly. Access is gated by the ingest token in a header
+// (not cookies), so any origin is allowed unless Ingest:AllowedOrigins pins a list.
+var ingestOrigins = cfgRoot.GetSection("Ingest:AllowedOrigins").Get<string[]>();
+builder.Services.AddCors(o => o.AddPolicy(IngestEndpoints.CorsPolicy, p =>
+{
+    if (ingestOrigins is { Length: > 0 })
+    {
+        p.WithOrigins(ingestOrigins);
+    }
+    else
+    {
+        p.AllowAnyOrigin();
+    }
+    p.WithMethods("POST", "OPTIONS")
+     .WithHeaders("Content-Type", "X-Logrr-ApiKey", "X-Seq-ApiKey", "Authorization");
+}));
+
 builder.WebHost.ConfigureKestrel(k => k.Limits.MaxRequestBodySize =
     cfgRoot.GetValue("Ingest:MaxRequestBytes", 10_485_760L));
 
@@ -188,6 +205,7 @@ using (var scope = app.Services.CreateScope())
 }
 
 app.UseStaticFiles();
+app.UseCors();
 app.UseAuthentication();
 app.UseAuthorization();
 app.UseAntiforgery();

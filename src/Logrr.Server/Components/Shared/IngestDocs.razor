@@ -60,13 +60,23 @@
                 <strong>Ingest</strong>-scoped token.
             </span>
         }
+        else if (_tab == "Browser")
+        {
+            <span class="hint">
+                No build step — the tag loads <code>@Endpoint/logrr.js</code> straight from this
+                server. Cross-origin posting is enabled (the token in the header is the gate).
+                <strong>The key is visible to anyone with the page</strong>, so use a dedicated
+                <strong>Ingest</strong>-scoped token and restrict origins with
+                <code>Ingest:AllowedOrigins</code> if you can.
+            </span>
+        }
     </div>
 </div>
 
 @code {
     [Parameter] public string AppId { get; set; } = "";
 
-    private static readonly string[] Tabs = [".NET", "Serilog", "Node.js", "curl"];
+    private static readonly string[] Tabs = [".NET", "Serilog", "Node.js", "Browser", "curl"];
     private string _tab = ".NET";
     private bool _copied;
 
@@ -101,6 +111,18 @@ const logrr = new LogrrClient({{
 }});
 
 logrr.info(""Order {{Id}} shipped from {AppId}"", {{ Id: 1042 }});",
+
+        "Browser" =>
+$@"<!-- Served by this Logrr server; exposes a global `Logrr`. -->
+<script src=""{Endpoint}/logrr.js""></script>
+<script>
+  const logrr = new Logrr.LogrrClient({{
+    endpoint: ""{Endpoint}"",
+    apiKey: ""{Token}"",
+  }});
+  Logrr.flushOnPageHide(logrr);
+  logrr.info(""Page {{Path}} loaded"", {{ Path: location.pathname }});
+</script>",
 
         _ =>
 $@"curl -X POST {Endpoint}/api/events/raw \
