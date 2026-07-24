@@ -14,6 +14,31 @@ public class MessageTemplateTests
     }
 
     [Fact]
+    public void Tokenize_splits_literals_and_holes()
+    {
+        var segs = MessageTemplate.Tokenize("Payment {Amount} failed for {@UserId}");
+        Assert.Equal(4, segs.Count);
+        Assert.False(segs[0].IsHole);
+        Assert.Equal("Payment ", segs[0].Text);
+        Assert.True(segs[1].IsHole);
+        Assert.Equal("Amount", segs[1].Name);
+        Assert.False(segs[2].IsHole);
+        Assert.Equal(" failed for ", segs[2].Text);
+        Assert.True(segs[3].IsHole);
+        Assert.Equal("UserId", segs[3].Name); // destructuring hint stripped
+    }
+
+    [Fact]
+    public void Tokenize_unescapes_braces_and_strips_format()
+    {
+        var segs = MessageTemplate.Tokenize("{{literal}} {Count:N0} done");
+        Assert.Equal("{literal} ", segs[0].Text);
+        Assert.True(segs[1].IsHole);
+        Assert.Equal("Count", segs[1].Name); // format specifier dropped
+        Assert.Equal(" done", segs[2].Text);
+    }
+
+    [Fact]
     public void Honours_destructuring_hints()
     {
         var props = new Dictionary<string, object?> { ["Order"] = "A1" };

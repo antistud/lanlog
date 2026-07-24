@@ -1,0 +1,69 @@
+@using System.Text.Json
+@using Logrr.Core
+@using Logrr.Server.Exploring
+
+@if (_segments.Count == 0)
+{
+    @Event.Message
+}
+else
+{
+    @foreach (var seg in _segments)
+    {
+        if (!seg.IsHole)
+        {
+            <text>@seg.Text</text>
+        }
+        else
+        {
+            var v = Resolve(seg.Name);
+            if (v is null)
+            {
+                <text>@seg.Name</text>
+            }
+            else if (v.Value.Filterable && OnFilter.HasDelegate)
+            {
+                <span class="tok" role="button" tabindex="-1"
+                      title="Filter by @seg.Name = @v.Value.Display"
+                      @onclick:stopPropagation="true"
+                      @onclick="() => OnFilter.InvokeAsync(new FieldFilter(seg.Name, v.Value.Rendered))">@v.Value.Display</span>
+            }
+            else
+            {
+                <span class="tok tok-plain">@v.Value.Display</span>
+            }
+        }
+    }
+}
+
+@code {
+    [Parameter, EditorRequired] public LogEventDto Event { get; set; } = default!;
+
+    /// <summary>Raised when a template value is clicked, to add it to the filter.</summary>
+    [Parameter] public EventCallback<FieldFilter> OnFilter { get; set; }
+
+    private IReadOnlyList<MessageTemplate.Segment> _segments = [];
+
+    protected override void OnParametersSet() =>
+        _segments = MessageTemplate.Tokenize(Event.Template);
+
+    private readonly record struct Val(string Display, string Rendered, bool Filterable);
+
+    private Val? Resolve(string name)
+    {
+        if (Event.Properties is not { ValueKind: JsonValueKind.Object } props
+            || !props.TryGetProperty(name, out var el))
+        {
+            return null;
+        }
+        return el.ValueKind switch
+        {
+            JsonValueKind.String => new Val(el.GetString() ?? "", FilterClause.Quote(el.GetString() ?? ""), true),
+            JsonValueKind.Number => new Val(el.GetRawText(), el.GetRawText(), true),
+            JsonValueKind.True => new Val("true", "true", true),
+            JsonValueKind.False => new Val("false", "false", true),
+            JsonValueKind.Null => new Val("null", "", false),
+            _ => new Val(el.GetRawText(), "", false), // object/array: show, don't filter
+        };
+    }
+}

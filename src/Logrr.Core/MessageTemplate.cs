@@ -68,6 +68,90 @@ public static class MessageTemplate
         return sb.ToString();
     }
 
+    /// <summary>A piece of a tokenized template: literal text, or a named hole to be filled.</summary>
+    public readonly record struct Segment(bool IsHole, string Text)
+    {
+        /// <summary>For a hole, the resolved property name (destructuring/format hints stripped).</summary>
+        public string Name => Text;
+    }
+
+    /// <summary>
+    /// Split a template into literal and hole segments so a UI can render hole values with
+    /// distinct styling (and make them click-to-filter). Brace escapes are unescaped into the
+    /// literal runs; holes carry their bare property name. Value resolution is left to the caller.
+    /// </summary>
+    public static IReadOnlyList<Segment> Tokenize(string? template)
+    {
+        var segments = new List<Segment>();
+        if (string.IsNullOrEmpty(template))
+        {
+            return segments;
+        }
+
+        var literal = new StringBuilder();
+        void FlushLiteral()
+        {
+            if (literal.Length > 0)
+            {
+                segments.Add(new Segment(false, literal.ToString()));
+                literal.Clear();
+            }
+        }
+
+        var i = 0;
+        while (i < template.Length)
+        {
+            var c = template[i];
+            if (c == '{')
+            {
+                if (i + 1 < template.Length && template[i + 1] == '{')
+                {
+                    literal.Append('{');
+                    i += 2;
+                    continue;
+                }
+                var close = template.IndexOf('}', i + 1);
+                if (close < 0)
+                {
+                    literal.Append(template, i, template.Length - i);
+                    break;
+                }
+                FlushLiteral();
+                segments.Add(new Segment(true, HoleName(template.Substring(i + 1, close - i - 1))));
+                i = close + 1;
+                continue;
+            }
+            if (c == '}' && i + 1 < template.Length && template[i + 1] == '}')
+            {
+                literal.Append('}');
+                i += 2;
+                continue;
+            }
+            literal.Append(c);
+            i++;
+        }
+        FlushLiteral();
+        return segments;
+    }
+
+    /// <summary>Reduce a raw hole body (<c>@Name,align:format</c>) to its bare property name.</summary>
+    private static string HoleName(string hole)
+    {
+        var name = hole;
+        var colon = hole.IndexOf(':');
+        var comma = hole.IndexOf(',');
+        var cut = colon < 0 ? comma : comma < 0 ? colon : Math.Min(colon, comma);
+        if (cut >= 0)
+        {
+            name = hole[..cut];
+        }
+        if (name.Length > 0 && (name[0] == '@' || name[0] == '$'))
+        {
+            name = name[1..];
+        }
+        return name;
+    }
+
     private static string RenderHole(string hole, IReadOnlyDictionary<string, object?> properties)
     {
         if (hole.Length == 0)

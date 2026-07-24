@@ -1,9 +1,12 @@
 @page "/apps/{AppId}/search"
 @attribute [Authorize]
 @rendermode InteractiveServer
+@using System.Text.Json
+@using Logrr.Server.Exploring
 @inject Logrr.Storage.EventReader Reader
 @inject Logrr.Notify.TicketLinkStore TicketLinks
 @inject NavigationManager Nav
+@inject IJSRuntime JS
 
 <PageTitle>@AppId · search — Logrr</PageTitle>
 
@@ -13,7 +16,7 @@
     <div class="row">
         <div class="field flex-1" style="margin:0; min-width:220px">
             <label>Full-text</label>
-            <input class="input" @bind="_text" @bind:after="Run" placeholder="timeout" />
+            <input class="input" @ref="_searchBox" @bind="_text" @bind:after="Run" placeholder="timeout" />
         </div>
         <div class="field" style="margin:0; min-width:140px">
             <label>Level ≥</label>
@@ -22,9 +25,10 @@
                 @foreach (var l in Levels) { <option value="@l">@l</option> }
             </select>
         </div>
-        <div class="field" style="margin:0; min-width:140px">
+        <div class="field" style="margin:0; min-width:150px">
             <label>Time range</label>
-            <select class="input" @bind="_range" @bind:after="Run">
+            <select class="input" @bind="_range" @bind:after="OnRangeChanged">
+                @if (_customRange) { <option value="custom">Custom (zoomed)</option> }
                 <option value="15m">Last 15 min</option>
                 <option value="1h">Last hour</option>
                 <option value="24h">Last 24 hours</option>
@@ -34,54 +38,160 @@
         </div>
     </div>
     <div class="field flex-1" style="margin:var(--sp-3) 0 0">
-        <label>Filter expression</label>
-        <input class="input mono" @bind="_filter" @bind:after="Run" placeholder="Level >= Warning and not Source = 'HealthCheck'" />
+        <label>
+            Filter expression
+            @if (!string.IsNullOrWhiteSpace(_filter))
+            {
+                <button class="linkish" @onclick="ClearFilter" title="Clear filter">clear</button>
+            }
+        </label>
+        <input class="input mono" @bind="_filter" @bind:after="Run"
+               placeholder="Level >= Warning and not Source = 'HealthCheck'" />
         @if (_error is not null)
         {
             <span class="hint" style="color:var(--danger)">@_error</span>
         }
+        else
+        {
+            <span class="hint">Tip: click a level, source, or highlighted value to filter by it.</span>
+        }
     </div>
 </div>
 
-<div class="flex between items-center mb-4 meta">
-    <span>@_events.Count result@(_events.Count == 1 ? "" : "s")@(_partitions > 0 ? $" · {_partitions} partition(s) scanned" : "")</span>
-</div>
-
-<div class="table-wrap">
-    <table class="data">
-        <thead>
-            <tr><th style="width:180px">Time</th><th style="width:110px">Level</th><th>Message</th><th style="width:120px"></th></tr>
-        </thead>
-        <tbody>
-            @if (_events.Count == 0)
-            {
-                <tr><td colspan="4"><div class="empty" style="padding:var(--sp-6)"><div class="glyph">⌕</div><div class="muted">No matching events.</div></div></td></tr>
-            }
-            @foreach (var e in _events)
-            {
-                <tr>
-                    <td class="mono-sm nowrap">@e.Timestamp.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</td>
-                    <td><LevelChip Level="e.Level" /></td>
-                    <td class="truncate" style="max-width:560px">
-                        @e.Message
-                        @if (e.EventType is { } et && _tickets.TryGetValue(et, out var url))
-                        {
-                            <a class="badge accent" style="margin-left:6px" href="@url" target="_blank" @onclick:stopPropagation="true">🎫 ticket</a>
-                        }
-                    </td>
-                    <td class="text-right"><a href="@($"/apps/{AppId}/events/{e.Id}")">Detail →</a></td>
-                </tr>
-            }
-        </tbody>
-    </table>
-</div>
-
-@if (_cursor is not null)
+@if (_histogram is { Total: > 0 })
 {
-    <div class="row" style="justify-content:center; margin-top:var(--sp-4)">
-        <button class="btn" @onclick="More">Load more</button>
+    <div class="card" style="padding:var(--sp-3) var(--sp-4); margin-bottom:var(--sp-4)">
+        <VolumeHistogram Data="_histogram" OnRange="ZoomTo" />
     </div>
 }
+
+<div class="explore">
+    <aside class="explore-side">
+        @if (_facets is not null)
+        {
+            <FacetPanel Data="_facets" OnFilter="AddFilter" />
+        }
+    </aside>
+
+    <div class="explore-main">
+        <div class="flex between items-center mb-4 meta">
+            <span>@_events.Count result@(_events.Count == 1 ? "" : "s")@(_partitions > 0 ? $" · {_partitions} partition(s) scanned" : "")</span>
+            @if (_propertyKeys.Count > 0)
+            {
+                <div class="colbar">
+                    <span class="muted-2">columns:</span>
+                    @foreach (var key in _propertyKeys)
+                    {
+                        <button class="colchip @(_columns.Contains(key) ? "on" : "")" @onclick="() => ToggleColumn(key)">@key</button>
+                    }
+                </div>
+            }
+        </div>
+
+        <div class="table-wrap" tabindex="0" @onkeydown="OnKey" @onkeydown:preventDefault="_preventKey">
+            <table class="data explore-table">
+                <thead>
+                    <tr>
+                        <th style="width:150px">Time</th>
+                        <th style="width:96px">Level</th>
+                        @foreach (var col in _columns) { <th style="width:120px" class="mono-sm">@col</th> }
+                        <th>Message</th>
+                        <th style="width:70px"></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @if (_events.Count == 0)
+                    {
+                        <tr><td colspan="@(4 + _columns.Count)"><div class="empty" style="padding:var(--sp-6)"><div class="glyph">⌕</div><div class="muted">No matching events.</div></div></td></tr>
+                    }
+                    @{ DateOnly? lastDay = null; }
+                    @for (var i = 0; i < _events.Count; i++)
+                    {
+                        var idx = i;
+                        var e = _events[i];
+                        var localDay = DateOnly.FromDateTime(e.Timestamp.ToLocalTime().DateTime);
+                        if (lastDay != localDay)
+                        {
+                            lastDay = localDay;
+                            <tr class="day-sep"><td colspan="@(4 + _columns.Count)">@e.Timestamp.ToLocalTime().ToString("dddd, MMMM d, yyyy")</td></tr>
+                        }
+                        <tr class="clickable sev-row sev-@e.Level @(idx == _selected ? "sel" : "")" @onclick="() => Toggle(idx)">
+                            <td class="mono-sm nowrap" title="@e.Timestamp.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff")">@Rel(e.Timestamp)</td>
+                            <td><LevelChip Level="e.Level" /></td>
+                            @foreach (var col in _columns)
+                            {
+                                <td class="mono-sm truncate" style="max-width:120px">@PropDisplay(e, col)</td>
+                            }
+                            <td class="truncate" style="max-width:560px">
+                                <RichMessage Event="e" OnFilter="AddFilter" />
+                                @if (e.EventType is { } et && _tickets.TryGetValue(et, out var url))
+                                {
+                                    <a class="badge accent" style="margin-left:6px" href="@url" target="_blank" @onclick:stopPropagation="true">🎫 ticket</a>
+                                }
+                            </td>
+                            <td class="text-right"><span class="expander">@(_expanded.Contains(e.Id) ? "▾" : "▸")</span></td>
+                        </tr>
+                        @if (_expanded.Contains(e.Id))
+                        {
+                            <tr class="expand-row">
+                                <td colspan="@(4 + _columns.Count)">
+                                    <div class="expand">
+                                        <dl class="kv">
+                                            @if (e.Template is not null) { <dt>Template</dt><dd class="mono-sm">@e.Template</dd> }
+                                            @if (e.Source is not null) { <dt>Source</dt><dd class="mono-sm">@e.Source</dd> }
+                                            @if (e.Machine is not null) { <dt>Machine</dt><dd class="mono-sm">@e.Machine</dd> }
+                                            @if (e.TraceId is not null) { <dt>Trace</dt><dd class="mono-sm">@e.TraceId</dd> }
+                                        </dl>
+
+                                        @if (PropList(e) is { Count: > 0 } kvs)
+                                        {
+                                            <div class="proptable">
+                                                @foreach (var p in kvs)
+                                                {
+                                                    <div class="proprow">
+                                                        <span class="propname mono-sm">@p.Name</span>
+                                                        <span class="propval mono-sm">@p.Display</span>
+                                                        @if (p.Filterable)
+                                                        {
+                                                            <span class="propacts">
+                                                                <button class="tiny" title="Filter to this" @onclick="() => AddFilter(new FieldFilter(p.Name, p.Rendered))">＋</button>
+                                                                <button class="tiny" title="Exclude this" @onclick="() => ExcludeFilter(new FieldFilter(p.Name, p.Rendered))">－</button>
+                                                            </span>
+                                                        }
+                                                    </div>
+                                                }
+                                            </div>
+                                        }
+
+                                        @if (e.Exception is not null)
+                                        {
+                                            <pre class="code">@e.Exception</pre>
+                                        }
+
+                                        <div class="flex gap-2 mt-2">
+                                            <a class="btn ghost sm" href="@($"/apps/{AppId}/events/{e.Id}")">Open detail →</a>
+                                            @if (e.Properties is { ValueKind: JsonValueKind.Object })
+                                            {
+                                                <button class="btn ghost sm" @onclick="() => CopyJson(e)">Copy JSON</button>
+                                            }
+                                        </div>
+                                    </div>
+                                </td>
+                            </tr>
+                        }
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        @if (_cursor is not null)
+        {
+            <div class="row" style="justify-content:center; margin-top:var(--sp-4)">
+                <button class="btn" @onclick="More">Load more</button>
+            </div>
+        }
+    </div>
+</div>
 
 @code {
     [Parameter] public string AppId { get; set; } = "";
@@ -98,9 +208,22 @@
     private readonly List<LogEventDto> _events = new();
     private IReadOnlyDictionary<long, string> _tickets = new Dictionary<long, string>();
 
+    private Logrr.Storage.HistogramResult? _histogram;
+    private Logrr.Storage.FacetResult? _facets;
+
+    private DateTimeOffset? _from, _to;
+    private bool _customRange;
+
+    private readonly HashSet<string> _expanded = new();
+    private readonly List<string> _propertyKeys = new();
+    private readonly HashSet<string> _columns = new();
+    private int _selected = -1;
+    private bool _preventKey;
+
+    private ElementReference _searchBox;
+
     protected override void OnInitialized()
     {
-        // Restore state from the shareable URL.
         _text = QText ?? "";
         _level = QLevel ?? "";
         _range = string.IsNullOrEmpty(QRange) ? "24h" : QRange;
@@ -109,7 +232,6 @@
         ResetAndFetch();
     }
 
-    // Called when a control changes: reflect the query in the URL (shareable) and re-run.
     private void Run()
     {
         var uri = Nav.GetUriWithQueryParameters(new Dictionary<string, object?>
@@ -123,39 +245,196 @@
         ResetAndFetch();
     }
 
+    private void OnRangeChanged()
+    {
+        // Choosing a preset clears any zoom.
+        _customRange = false;
+        _from = _to = null;
+        Run();
+    }
+
+    private void ZoomTo((DateTimeOffset From, DateTimeOffset To) span)
+    {
+        _from = span.From;
+        _to = span.To;
+        _customRange = true;
+        _range = "custom";
+        ResetAndFetch();
+    }
+
+    private void ClearFilter() { _filter = ""; Run(); }
+
+    private void AddFilter(FieldFilter f) => ApplyFilter(f, negate: false);
+    private void ExcludeFilter(FieldFilter f) => ApplyFilter(f, negate: true);
+
+    private void ApplyFilter(FieldFilter f, bool negate)
+    {
+        _filter = FilterClause.Add(_filter, f, negate);
+        Run();
+    }
+
     private void ResetAndFetch()
     {
         _events.Clear();
         _cursor = null;
         _partitions = 0;
+        _selected = -1;
+        _expanded.Clear();
         Fetch(reset: true);
+        LoadAggregates();
+        DiscoverColumns();
     }
 
     private void More() => Fetch(reset: false);
+
+    private Logrr.Storage.EventQuery BuildQuery(string? cursor) => new()
+    {
+        AppId = AppId,
+        From = _customRange ? _from : FromForRange(),
+        To = _customRange ? _to : null,
+        MinLevel = _level != "" && LevelMap(_level) is { } lvl ? lvl : null,
+        Text = string.IsNullOrWhiteSpace(_text) ? null : _text,
+        Filter = string.IsNullOrWhiteSpace(_filter) ? null : _filter,
+        Cursor = cursor,
+        Limit = 100,
+    };
 
     private void Fetch(bool reset)
     {
         _error = null;
         try
         {
-            var page = Reader.Query(new Logrr.Storage.EventQuery
-            {
-                AppId = AppId,
-                From = FromForRange(),
-                MinLevel = _level != "" && LevelMap(_level) is { } lvl ? lvl : null,
-                Text = string.IsNullOrWhiteSpace(_text) ? null : _text,
-                Filter = string.IsNullOrWhiteSpace(_filter) ? null : _filter,
-                Cursor = reset ? null : _cursor,
-                Limit = 100,
-            });
+            var page = Reader.Query(BuildQuery(reset ? null : _cursor));
             _events.AddRange(page.Events);
             _cursor = page.NextCursor;
             _partitions = Math.Max(_partitions, page.PartitionsScanned);
+            if (!reset) { DiscoverColumns(); }
         }
         catch (Logrr.Core.Filters.FilterParseException ex)
         {
             _error = $"Filter: {ex.Message}";
         }
+    }
+
+    private void LoadAggregates()
+    {
+        if (_error is not null) { _histogram = null; _facets = null; return; }
+        try
+        {
+            _histogram = Reader.Histogram(BuildQuery(null));
+            _facets = Reader.Facets(BuildQuery(null));
+        }
+        catch (Logrr.Core.Filters.FilterParseException)
+        {
+            _histogram = null;
+            _facets = null;
+        }
+    }
+
+    private void DiscoverColumns()
+    {
+        foreach (var e in _events)
+        {
+            if (e.Properties is not { ValueKind: JsonValueKind.Object } props) { continue; }
+            foreach (var p in props.EnumerateObject())
+            {
+                if (!_propertyKeys.Contains(p.Name) && _propertyKeys.Count < 20)
+                {
+                    _propertyKeys.Add(p.Name);
+                }
+            }
+        }
+    }
+
+    private void ToggleColumn(string key)
+    {
+        if (!_columns.Remove(key)) { _columns.Add(key); }
+    }
+
+    private void Toggle(int idx)
+    {
+        _selected = idx;
+        var id = _events[idx].Id;
+        if (!_expanded.Remove(id)) { _expanded.Add(id); }
+    }
+
+    private void OnKey(KeyboardEventArgs e)
+    {
+        _preventKey = false;
+        if (_events.Count == 0) { return; }
+        switch (e.Key)
+        {
+            case "j":
+                _selected = Math.Min(_selected + 1, _events.Count - 1);
+                _preventKey = true;
+                break;
+            case "k":
+                _selected = Math.Max(_selected <= 0 ? 0 : _selected - 1, 0);
+                _preventKey = true;
+                break;
+            case "Enter":
+                if (_selected >= 0) { Toggle(_selected); }
+                _preventKey = true;
+                break;
+            case "/":
+                _preventKey = true;
+                _ = _searchBox.FocusAsync();
+                break;
+        }
+    }
+
+    private async Task CopyJson(LogEventDto e)
+    {
+        if (e.Properties is { } props)
+        {
+            var json = JsonSerializer.Serialize(props, Indented);
+            await JS.InvokeVoidAsync("logrrCopy", json);
+        }
+    }
+
+    private static readonly JsonSerializerOptions Indented = new() { WriteIndented = true };
+
+    private readonly record struct Prop(string Name, string Display, string Rendered, bool Filterable);
+
+    private static List<Prop> PropList(LogEventDto e)
+    {
+        var list = new List<Prop>();
+        if (e.Properties is not { ValueKind: JsonValueKind.Object } props) { return list; }
+        foreach (var p in props.EnumerateObject())
+        {
+            list.Add(ToProp(p.Name, p.Value));
+        }
+        return list;
+    }
+
+    private static string PropDisplay(LogEventDto e, string key)
+    {
+        if (e.Properties is { ValueKind: JsonValueKind.Object } props && props.TryGetProperty(key, out var el))
+        {
+            return ToProp(key, el).Display;
+        }
+        return "";
+    }
+
+    private static Prop ToProp(string name, JsonElement el) => el.ValueKind switch
+    {
+        JsonValueKind.String => new Prop(name, el.GetString() ?? "", FilterClause.Quote(el.GetString() ?? ""), true),
+        JsonValueKind.Number => new Prop(name, el.GetRawText(), el.GetRawText(), true),
+        JsonValueKind.True => new Prop(name, "true", "true", true),
+        JsonValueKind.False => new Prop(name, "false", "false", true),
+        JsonValueKind.Null => new Prop(name, "null", "", false),
+        _ => new Prop(name, el.GetRawText(), "", false),
+    };
+
+    private static string Rel(DateTimeOffset ts)
+    {
+        var d = DateTimeOffset.UtcNow - ts;
+        if (d < TimeSpan.Zero) { d = TimeSpan.Zero; }
+        if (d.TotalSeconds < 60) { return $"{(int)d.TotalSeconds}s ago"; }
+        if (d.TotalMinutes < 60) { return $"{(int)d.TotalMinutes}m ago"; }
+        if (d.TotalHours < 24) { return $"{(int)d.TotalHours}h ago"; }
+        if (d.TotalDays < 7) { return $"{(int)d.TotalDays}d ago"; }
+        return ts.ToLocalTime().ToString("MMM d, HH:mm");
     }
 
     private DateTimeOffset? FromForRange() => _range switch

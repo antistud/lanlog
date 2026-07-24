@@ -19,6 +19,29 @@ public sealed record EventQuery
     public int Limit { get; init; } = 100;
 }
 
+/// <summary>One time bucket of the volume histogram: per-level counts over <see cref="Start"/>..Start+width.</summary>
+public sealed record HistogramBucket(DateTimeOffset Start, IReadOnlyDictionary<LogLevel, long> Counts)
+{
+    public long Total => Counts.Values.Sum();
+}
+
+/// <summary>A volume histogram over the query's time range (SPEC §7 explore).</summary>
+public sealed record HistogramResult(
+    DateTimeOffset From, DateTimeOffset To, TimeSpan BucketSize,
+    IReadOnlyList<HistogramBucket> Buckets)
+{
+    public long Total => Buckets.Sum(b => b.Total);
+    public long Max => Buckets.Count == 0 ? 0 : Buckets.Max(b => b.Total);
+}
+
+/// <summary>A single facet value and how many matching events carry it.</summary>
+public sealed record Facet(string Value, long Count);
+
+/// <summary>Facet breakdown of the current query: counts by level and top sources.</summary>
+public sealed record FacetResult(
+    IReadOnlyList<(LogLevel Level, long Count)> Levels,
+    IReadOnlyList<Facet> Sources);
+
 /// <summary>
 /// Reads events across an app's partitions, newest-first, stopping once the page is filled
 /// (SPEC §4.1, §7). Opens partitions read-only.
@@ -26,6 +49,7 @@ public sealed record EventQuery
 public sealed class EventReader(PartitionManager partitions)
 {
     private const int MaxLimit = 1000;
+    private const int MaxAggregatePartitions = 90;
 
     public EventQueryResponse Query(EventQuery query)
     {
@@ -101,12 +125,14 @@ public sealed class EventReader(PartitionManager partitions)
         };
     }
 
-    private static IEnumerable<(long Rowid, LogEventDto Dto)> ReadPartition(
-        SqliteConnection conn, DateOnly day, EventQuery query, FilterExpression? filter,
-        long? idUpperBound, int limit)
+    /// <summary>
+    /// Append the shared WHERE predicate (time, level, full-text, filter expression) to a command,
+    /// so the results table, histogram, and facets all filter identically.
+    /// </summary>
+    private static string BuildWhere(
+        SqliteCommand cmd, EventQuery query, FilterExpression? filter, long? idUpperBound)
     {
         var where = new StringBuilder("1=1");
-        using var cmd = conn.CreateCommand();
 
         if (query.From is { } from)
         {
@@ -144,6 +170,16 @@ public sealed class EventReader(PartitionManager partitions)
             }
             where.Append(" AND (").Append(sql).Append(')');
         }
+
+        return where.ToString();
+    }
+
+    private static IEnumerable<(long Rowid, LogEventDto Dto)> ReadPartition(
+        SqliteConnection conn, DateOnly day, EventQuery query, FilterExpression? filter,
+        long? idUpperBound, int limit)
+    {
+        using var cmd = conn.CreateCommand();
+        var where = BuildWhere(cmd, query, filter, idUpperBound);
 
         cmd.CommandText = $"""
             SELECT id, ts, level, template, message, exception, event_type,
@@ -217,6 +253,139 @@ public sealed class EventReader(PartitionManager partitions)
             total += Convert.ToInt64(cmd.ExecuteScalar());
         }
         return total;
+    }
+
+    /// <summary>
+    /// Bucketed per-level event counts over the query's time range, for the volume histogram.
+    /// Uses the same filters as <see cref="Query"/> so the chart matches the results.
+    /// </summary>
+    public HistogramResult Histogram(EventQuery query, int buckets = 60)
+    {
+        buckets = Math.Clamp(buckets, 1, 500);
+        FilterExpression? filter = string.IsNullOrWhiteSpace(query.Filter)
+            ? null : FilterExpression.Parse(query.Filter);
+
+        var to = query.To ?? DateTimeOffset.UtcNow;
+        var from = query.From ?? EarliestEvent(query.AppId) ?? to.AddHours(-24);
+        if (from >= to)
+        {
+            from = to.AddMinutes(-1);
+        }
+
+        var fromMicros = EventPartition.UnixMicros(from);
+        var toMicros = EventPartition.UnixMicros(to);
+        var bucketMicros = Math.Max(1, (toMicros - fromMicros) / buckets);
+
+        var tallies = new Dictionary<LogLevel, long>[buckets];
+        for (var i = 0; i < buckets; i++)
+        {
+            tallies[i] = new Dictionary<LogLevel, long>();
+        }
+
+        var bounded = query with { From = from, To = to };
+        var fromDay = StoragePaths.DayOf(from);
+        var toDay = StoragePaths.DayOf(to);
+        var scanned = 0;
+
+        foreach (var day in partitions.ExistingDaysDescending(query.AppId))
+        {
+            if (day > toDay) { continue; }
+            if (day < fromDay || scanned >= MaxAggregatePartitions) { break; }
+            using var conn = partitions.OpenReader(query.AppId, day);
+            if (conn is null)
+            {
+                continue;
+            }
+            scanned++;
+
+            using var cmd = conn.CreateCommand();
+            var where = BuildWhere(cmd, bounded, filter, null);
+            var pFrom = cmd.AddParam(fromMicros);
+            var pBucket = cmd.AddParam(bucketMicros);
+            cmd.CommandText =
+                $"SELECT CAST((ts - {pFrom}) / {pBucket} AS INTEGER) AS b, level, COUNT(*) " +
+                $"FROM events WHERE {where} GROUP BY b, level;";
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                var b = (int)Math.Clamp(reader.GetInt64(0), 0, buckets - 1);
+                var level = (LogLevel)reader.GetInt32(1);
+                var count = reader.GetInt64(2);
+                tallies[b][level] = tallies[b].GetValueOrDefault(level) + count;
+            }
+        }
+
+        var bucketSize = TimeSpan.FromTicks((toMicros - fromMicros) * 10 / buckets);
+        var list = new List<HistogramBucket>(buckets);
+        for (var i = 0; i < buckets; i++)
+        {
+            list.Add(new HistogramBucket(from + TimeSpan.FromTicks(bucketSize.Ticks * i), tallies[i]));
+        }
+        return new HistogramResult(from, to, bucketSize, list);
+    }
+
+    /// <summary>Counts by level and the top sources for the current query (facet sidebar).</summary>
+    public FacetResult Facets(EventQuery query, int topSources = 8)
+    {
+        FilterExpression? filter = string.IsNullOrWhiteSpace(query.Filter)
+            ? null : FilterExpression.Parse(query.Filter);
+
+        var levels = new Dictionary<LogLevel, long>();
+        var sources = new Dictionary<string, long>();
+        var fromDay = query.From is { } f ? StoragePaths.DayOf(f) : DateOnly.MinValue;
+        var toDay = query.To is { } t ? StoragePaths.DayOf(t) : DateOnly.MaxValue;
+        var scanned = 0;
+
+        foreach (var day in partitions.ExistingDaysDescending(query.AppId))
+        {
+            if (day > toDay) { continue; }
+            if (day < fromDay || scanned >= MaxAggregatePartitions) { break; }
+            using var conn = partitions.OpenReader(query.AppId, day);
+            if (conn is null)
+            {
+                continue;
+            }
+            scanned++;
+
+            using (var cmd = conn.CreateCommand())
+            {
+                var where = BuildWhere(cmd, query, filter, null);
+                cmd.CommandText = $"SELECT level, COUNT(*) FROM events WHERE {where} GROUP BY level;";
+                using var r = cmd.ExecuteReader();
+                while (r.Read())
+                {
+                    levels[(LogLevel)r.GetInt32(0)] = levels.GetValueOrDefault((LogLevel)r.GetInt32(0)) + r.GetInt64(1);
+                }
+            }
+            using (var cmd = conn.CreateCommand())
+            {
+                var where = BuildWhere(cmd, query, filter, null);
+                cmd.CommandText =
+                    $"SELECT source, COUNT(*) FROM events WHERE {where} AND source IS NOT NULL GROUP BY source;";
+                using var r = cmd.ExecuteReader();
+                while (r.Read())
+                {
+                    var src = r.GetString(0);
+                    sources[src] = sources.GetValueOrDefault(src) + r.GetInt64(1);
+                }
+            }
+        }
+
+        var levelList = levels.OrderByDescending(kv => (int)kv.Key)
+            .Select(kv => (kv.Key, kv.Value)).ToList();
+        var sourceList = sources.OrderByDescending(kv => kv.Value).Take(topSources)
+            .Select(kv => new Facet(kv.Key, kv.Value)).ToList();
+        return new FacetResult(levelList, sourceList);
+    }
+
+    private DateTimeOffset? EarliestEvent(string appId)
+    {
+        DateOnly? earliest = null;
+        foreach (var day in partitions.ExistingDaysDescending(appId))
+        {
+            earliest = day; // descending, so the last seen is the oldest
+        }
+        return earliest is { } d ? new DateTimeOffset(d.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero) : null;
     }
 
     /// <summary>Fetch a single event by its composite id (SPEC §7 event detail).</summary>

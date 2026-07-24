@@ -1,0 +1,44 @@
+@using Logrr.Contracts
+@using Logrr.Storage
+@using Logrr.Server.Exploring
+
+<div class="facets">
+    <div class="facet-group">
+        <div class="facet-head">Levels</div>
+        @if (Data.Levels.Count == 0)
+        {
+            <div class="facet-empty">—</div>
+        }
+        @foreach (var (level, count) in Data.Levels)
+        {
+            <button class="facet-row" title="Filter to @level"
+                    @onclick='() => OnFilter.InvokeAsync(new FieldFilter("Level", level.ToString()))'>
+                <span class="lvl lvl-@level" style="min-width:74px">@level</span>
+                <span class="facet-count">@count.ToString("N0")</span>
+            </button>
+        }
+    </div>
+
+    <div class="facet-group">
+        <div class="facet-head">Top sources</div>
+        @if (Data.Sources.Count == 0)
+        {
+            <div class="facet-empty">No source data</div>
+        }
+        @foreach (var s in Data.Sources)
+        {
+            <button class="facet-row" title="Filter to @s.Value"
+                    @onclick='() => OnFilter.InvokeAsync(new FieldFilter("Source", FilterClause.Quote(s.Value)))'>
+                <span class="facet-name mono-sm">@s.Value</span>
+                <span class="facet-count">@s.Count.ToString("N0")</span>
+            </button>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public FacetResult Data { get; set; } = default!;
+
+    /// <summary>Raised when a facet is clicked, to add it to the filter.</summary>
+    [Parameter] public EventCallback<FieldFilter> OnFilter { get; set; }
+}

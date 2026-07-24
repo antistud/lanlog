@@ -1,0 +1,104 @@
+@using Logrr.Contracts
+@using Logrr.Storage
+
+<div class="hist" @onpointerup="EndDragOutside" @onpointerleave="CancelDrag">
+    <div class="hist-bars" style="--n:@Data.Buckets.Count">
+        @for (var i = 0; i < Data.Buckets.Count; i++)
+        {
+            var idx = i;
+            var b = Data.Buckets[i];
+            var sel = _dragging && idx >= Math.Min(_start, _end) && idx <= Math.Max(_start, _end);
+            <div class="hist-col @(sel ? "sel" : "")" title="@Tooltip(b)"
+                 @onpointerdown="() => StartDrag(idx)"
+                 @onpointerenter="() => Extend(idx)"
+                 @onpointerup="() => EndDrag(idx)">
+                @if (b.Total > 0)
+                {
+                    <div class="hist-stack" style="height:@Height(b)">
+                        @foreach (var lvl in StackOrder)
+                        {
+                            if (b.Counts.TryGetValue(lvl, out var c) && c > 0)
+                            {
+                                <span style="flex:@c; background:var(--lvl-@Css(lvl))"></span>
+                            }
+                        }
+                    </div>
+                }
+            </div>
+        }
+    </div>
+    <div class="hist-axis">
+        <span>@Data.From.ToLocalTime().ToString("MMM d, HH:mm")</span>
+        <span class="hist-hint">@(OnRange.HasDelegate ? "drag to zoom" : "")</span>
+        <span>@Data.To.ToLocalTime().ToString("MMM d, HH:mm")</span>
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public HistogramResult Data { get; set; } = default!;
+
+    /// <summary>Raised with the selected [from, to) when the user clicks or drags a span.</summary>
+    [Parameter] public EventCallback<(DateTimeOffset From, DateTimeOffset To)> OnRange { get; set; }
+
+    // Severe levels stacked on top (rendered first in a top-down column).
+    private static readonly LogLevel[] StackOrder =
+        [LogLevel.Fatal, LogLevel.Error, LogLevel.Warning, LogLevel.Information, LogLevel.Debug, LogLevel.Verbose];
+
+    private bool _dragging;
+    private int _start, _end;
+
+    private string Height(HistogramBucket b)
+    {
+        var max = Data.Max;
+        if (max <= 0) { return "0%"; }
+        // Floor the visible height so a single event is still a legible sliver.
+        var pct = Math.Max(6.0, b.Total / (double)max * 100.0);
+        return pct.ToString("0.#") + "%";
+    }
+
+    private static string Css(LogLevel l) => l switch
+    {
+        LogLevel.Verbose => "verbose",
+        LogLevel.Debug => "debug",
+        LogLevel.Information => "info",
+        LogLevel.Warning => "warning",
+        LogLevel.Error => "error",
+        _ => "fatal",
+    };
+
+    private string Tooltip(HistogramBucket b)
+    {
+        var when = b.Start.ToLocalTime().ToString("MMM d, HH:mm");
+        if (b.Total == 0) { return $"{when} — no events"; }
+        var parts = StackOrder.Where(l => b.Counts.GetValueOrDefault(l) > 0)
+            .Select(l => $"{l} {b.Counts[l]:N0}");
+        return $"{when} — {b.Total:N0} ({string.Join(", ", parts)})";
+    }
+
+    private void StartDrag(int i) { if (OnRange.HasDelegate) { _dragging = true; _start = _end = i; } }
+    private void Extend(int i) { if (_dragging) { _end = i; } }
+    private void CancelDrag() => _dragging = false;
+
+    private async Task EndDrag(int i)
+    {
+        if (!_dragging) { return; }
+        _end = i;
+        await Commit();
+    }
+
+    private async Task EndDragOutside()
+    {
+        if (_dragging) { await Commit(); }
+    }
+
+    private async Task Commit()
+    {
+        _dragging = false;
+        if (!OnRange.HasDelegate || Data.Buckets.Count == 0) { return; }
+        var lo = Math.Clamp(Math.Min(_start, _end), 0, Data.Buckets.Count - 1);
+        var hi = Math.Clamp(Math.Max(_start, _end), 0, Data.Buckets.Count - 1);
+        var from = Data.Buckets[lo].Start;
+        var to = Data.Buckets[hi].Start + Data.BucketSize;
+        await OnRange.InvokeAsync((from, to));
+    }
+}
