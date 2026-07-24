@@ -96,5 +96,13 @@ public static class ControlSchema
         """
         ALTER TABLE deliveries ADD COLUMN event_type INTEGER;
         """,
+
+        // v3 — browser CORS origins allowed to post logs, managed from the admin UI.
+        """
+        CREATE TABLE cors_origins (
+          origin TEXT PRIMARY KEY,
+          created_utc INTEGER NOT NULL
+        );
+        """,
     ];
 }

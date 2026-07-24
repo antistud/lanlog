@@ -8,6 +8,7 @@
 @inject Logrr.Notify.DeliveryStore Deliveries
 @inject Logrr.Storage.StoragePaths Paths
 @inject Logrr.Storage.Control.UserStore Users
+@inject Logrr.Server.Ingest.IngestCorsPolicy Cors
 @inject Microsoft.Extensions.Options.IOptions<Logrr.Server.ServerOptions> Options
 
 <PageTitle>Admin — Logrr</PageTitle>
@@ -49,6 +50,59 @@
                             }
                         </td>
                     </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-head">
+        <div>
+            <h3>Browser origins (CORS)</h3>
+            <div class="meta">Websites allowed to post logs from the browser. Ingest still requires a valid token.</div>
+        </div>
+    </div>
+    <div class="field" style="margin-bottom:var(--sp-3)">
+        <div class="flex gap-2">
+            <input class="input" placeholder="https://app.example.com" @bind="_originInput" @bind:event="oninput"
+                   @onkeydown="@(e => { if (e.Key == "Enter") AddOrigin(); })" />
+            <button class="btn primary" @onclick="AddOrigin">Add origin</button>
+        </div>
+        @if (_originErr is not null) { <span class="hint" style="color:var(--danger)">@_originErr</span> }
+        else { <span class="hint">Scheme + host + optional port, no path — e.g. <code>https://app.example.com</code>.</span> }
+    </div>
+
+    @if (Cors.AllowAny)
+    {
+        <div class="badge warn">No origins listed — <strong>any</strong> website may post with a valid token. Add one to lock it down.</div>
+    }
+
+    <div class="table-wrap" style="border:none">
+        <table class="data">
+            <thead><tr><th>Origin</th><th>Source</th><th>Added</th><th></th></tr></thead>
+            <tbody>
+                @foreach (var o in Cors.ConfigOrigins)
+                {
+                    <tr>
+                        <td><code>@o</code></td>
+                        <td><span class="badge">config</span></td>
+                        <td class="meta">—</td>
+                        <td class="text-right"><span class="meta" title="Set in Ingest:AllowedOrigins">read-only</span></td>
+                    </tr>
+                }
+                @foreach (var o in _origins)
+                {
+                    <tr>
+                        <td><code>@o.Origin</code></td>
+                        <td><span class="badge accent">UI</span></td>
+                        <td class="meta">@o.CreatedUtc.ToLocalTime().ToString("yyyy-MM-dd")</td>
+                        <td class="text-right"><button class="btn danger sm" @onclick="() => RemoveOrigin(o.Origin)">Remove</button></td>
+                    </tr>
+                }
+                @if (_origins.Count == 0 && Cors.ConfigOrigins.Count == 0)
+                {
+                    <tr><td colspan="4" class="meta">No origins configured.</td></tr>
                 }
             </tbody>
         </table>
@@ -109,6 +163,10 @@
     private string? _resetErr;
     private string? _currentUser;
 
+    private IReadOnlyList<Logrr.Storage.Control.CorsOrigin> _origins = [];
+    private string _originInput = "";
+    private string? _originErr;
+
     private DateTimeOffset _lastLoad;
 
     [CascadingParameter] private Task<AuthenticationState>? AuthState { get; set; }
@@ -156,7 +214,28 @@
         _dead = Deliveries.CountByStatus(Logrr.Notify.DeliveryStatus.DeadLettered);
         _diskMb = DiskFreeMb();
         _users = Users.List();
+        _origins = Cors.Managed();
         LoadLog();
+    }
+
+    private void AddOrigin()
+    {
+        _originErr = null;
+        if (string.IsNullOrWhiteSpace(_originInput)) { return; }
+        var normalized = Cors.Add(_originInput);
+        if (normalized is null)
+        {
+            _originErr = "Enter a valid http(s) origin, e.g. https://app.example.com";
+            return;
+        }
+        _originInput = "";
+        _origins = Cors.Managed();
+    }
+
+    private void RemoveOrigin(string origin)
+    {
+        Cors.Remove(origin);
+        _origins = Cors.Managed();
     }
 
     private long DiskFreeMb()

@@ -13,6 +13,7 @@ using Logrr.Server.Security;
 using Logrr.Storage;
 using Logrr.Storage.Control;
 using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.Cors.Infrastructure;
 using Microsoft.AspNetCore.DataProtection;
 using Serilog;
 
@@ -170,21 +171,16 @@ builder.Services.AddRazorComponents().AddInteractiveServerComponents();
 builder.Services.AddCascadingAuthenticationState();
 
 // Let browser code post logs directly. Access is gated by the ingest token in a header
-// (not cookies), so any origin is allowed unless Ingest:AllowedOrigins pins a list.
-var ingestOrigins = cfgRoot.GetSection("Ingest:AllowedOrigins").Get<string[]>();
-builder.Services.AddCors(o => o.AddPolicy(IngestEndpoints.CorsPolicy, p =>
-{
-    if (ingestOrigins is { Length: > 0 })
-    {
-        p.WithOrigins(ingestOrigins);
-    }
-    else
-    {
-        p.AllowAnyOrigin();
-    }
-    p.WithMethods("POST", "OPTIONS")
-     .WithHeaders("Content-Type", "X-Logrr-ApiKey", "X-Seq-ApiKey", "Authorization");
-}));
+// (not cookies). The allowed origins are managed in the admin UI (union with any pinned in
+// Ingest:AllowedOrigins); an empty list means any origin, since the token is the real gate.
+builder.Services.AddSingleton<CorsOriginStore>();
+builder.Services.AddSingleton<IngestCorsPolicy>();
+builder.Services.AddCors();
+builder.Services.AddOptions<CorsOptions>().Configure<IngestCorsPolicy>((cors, policy) =>
+    cors.AddPolicy(IngestEndpoints.CorsPolicy, p => p
+        .SetIsOriginAllowed(policy.IsAllowed)
+        .WithMethods("POST", "OPTIONS")
+        .WithHeaders("Content-Type", "X-Logrr-ApiKey", "X-Seq-ApiKey", "Authorization")));
 
 builder.WebHost.ConfigureKestrel(k => k.Limits.MaxRequestBodySize =
     cfgRoot.GetValue("Ingest:MaxRequestBytes", 10_485_760L));
