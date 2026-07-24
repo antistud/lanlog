@@ -50,13 +50,23 @@
                 <code>X-Seq-ApiKey</code> header.
             </span>
         }
+        else if (_tab == "Node.js")
+        {
+            <span class="hint">
+                The <code>@@logrr/client</code> package runs on Node 18+ and in the browser (ESM or
+                CommonJS, with TypeScript types). It batches and ships events fire-and-forget, and
+                preserves message templates — <code>logrr.info("Order {Id} shipped", { Id })</code>
+                arrives with <code>Id</code> as a field. In the browser, only ever ship an
+                <strong>Ingest</strong>-scoped token.
+            </span>
+        }
     </div>
 </div>
 
 @code {
     [Parameter] public string AppId { get; set; } = "";
 
-    private static readonly string[] Tabs = [".NET", "Serilog", "curl"];
+    private static readonly string[] Tabs = [".NET", "Serilog", "Node.js", "curl"];
     private string _tab = ".NET";
     private bool _copied;
 
@@ -80,6 +90,17 @@ using Serilog;
 
 builder.Services.AddSerilog(cfg => cfg
     .WriteTo.Seq(""{Endpoint}"", apiKey: ""{Token}""));",
+
+        "Node.js" =>
+$@"// npm install @@logrr/client
+import {{ LogrrClient }} from ""@@logrr/client"";
+
+const logrr = new LogrrClient({{
+    endpoint: ""{Endpoint}"",
+    apiKey: ""{Token}"",
+}});
+
+logrr.info(""Order {{Id}} shipped from {AppId}"", {{ Id: 1042 }});",
 
         _ =>
 $@"curl -X POST {Endpoint}/api/events/raw \
