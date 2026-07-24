@@ -69,6 +69,38 @@ else
         </div>
     }
 
+    <div class="card">
+        <div class="card-head">
+            <div><h3>Around this time</h3><span class="meta">What else happened within ±2 minutes, across all events.</span></div>
+            @if (!_contextLoaded)
+            {
+                <button class="btn ghost sm" @onclick="LoadContext">Show context</button>
+            }
+        </div>
+        @if (_contextLoaded)
+        {
+            <div class="table-wrap" style="border:none">
+                <table class="data explore-table">
+                    <tbody>
+                        @foreach (var r in _context)
+                        {
+                            <tr class="sev-row sev-@r.Level @(r.Id == EventId ? "sel" : "")">
+                                <td class="mono-sm nowrap" style="width:180px">@r.Timestamp.ToLocalTime().ToString("HH:mm:ss.fff")</td>
+                                <td style="width:112px"><LevelChip Level="r.Level" /></td>
+                                <td class="truncate" style="max-width:520px">@r.Message</td>
+                                <td class="text-right" style="width:60px">@if (r.Id != EventId) { <a href="@($"/apps/{AppId}/events/{r.Id}")">→</a> } else { <span class="badge accent">this</span> }</td>
+                            </tr>
+                        }
+                        @if (_context.Count == 0)
+                        {
+                            <tr><td class="meta" style="padding:var(--sp-4)">No other events in this window.</td></tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </div>
+
     @if (_related.Count > 0)
     {
         <div class="card">
@@ -134,6 +166,8 @@ else
 
     private LogEventDto? _event;
     private readonly List<LogEventDto> _related = new();
+    private readonly List<LogEventDto> _context = new();
+    private bool _contextLoaded;
     private Logrr.Notify.TicketLink? _link;
     private long _occurrences;
     private IReadOnlyList<Logrr.Notify.Destination> _destinations = [];
@@ -161,6 +195,21 @@ else
             var page = Reader.Query(new Logrr.Storage.EventQuery { AppId = AppId, Filter = $"TraceId = '{trace}'", Limit = 50 });
             _related.AddRange(page.Events);
         }
+    }
+
+    private void LoadContext()
+    {
+        _contextLoaded = true;
+        if (_event is null) { return; }
+        var window = TimeSpan.FromMinutes(2);
+        var page = Reader.Query(new Logrr.Storage.EventQuery
+        {
+            AppId = AppId,
+            From = _event.Timestamp - window,
+            To = _event.Timestamp + window,
+            Limit = 80,
+        });
+        _context.AddRange(page.Events); // newest-first
     }
 
     private async Task SubmitTicket()

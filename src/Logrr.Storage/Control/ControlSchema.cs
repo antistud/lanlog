@@ -104,5 +104,14 @@ public static class ControlSchema
           created_utc INTEGER NOT NULL
         );
         """,
+
+        // v4 — named, shareable saved searches per app (SPEC §7 explore).
+        """
+        CREATE TABLE saved_searches (
+          id TEXT PRIMARY KEY, app_id TEXT NOT NULL, name TEXT NOT NULL,
+          query TEXT NOT NULL, created_by TEXT, created_utc INTEGER NOT NULL
+        );
+        CREATE INDEX ix_saved_searches_app ON saved_searches(app_id, name);
+        """,
     ];
 }

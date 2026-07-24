@@ -465,3 +465,12 @@ pre.code { background: var(--surface-2); border: 1px solid var(--border); border
 
 .linkish { background: none; border: 0; color: var(--accent); cursor: pointer; font-size: var(--fs-sm); padding: 0 0 0 6px; }
 .linkish:hover { text-decoration: underline; }
+
+/* Saved searches bar */
+.savedbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: var(--sp-3); font-size: var(--fs-sm); }
+.savedchip { display: inline-flex; align-items: center; border: 1px solid var(--border); border-radius: 999px; overflow: hidden; }
+.savedchip-apply { background: var(--surface); border: 0; color: var(--accent); cursor: pointer; padding: 2px 4px 2px 10px; font-size: var(--fs-sm); }
+.savedchip-apply:hover { background: var(--accent-soft); }
+.savedchip-del { background: var(--surface); border: 0; color: var(--ink-3); cursor: pointer; padding: 2px 8px 2px 4px; font-size: 13px; line-height: 1; }
+.savedchip-del:hover { color: var(--danger); }
+.input.sm { padding: 4px 8px; font-size: var(--fs-sm); }

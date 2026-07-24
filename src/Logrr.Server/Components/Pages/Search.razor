@@ -5,6 +5,8 @@
 @using Logrr.Server.Exploring
 @inject Logrr.Storage.EventReader Reader
 @inject Logrr.Notify.TicketLinkStore TicketLinks
+@inject Logrr.Storage.Control.SavedSearchStore Saved
+@inject AuthenticationStateProvider AuthState
 @inject NavigationManager Nav
 @inject IJSRuntime JS
 
@@ -13,6 +15,32 @@
 <AppTabs AppId="@AppId" Active="search" Title="Search" />
 
 <div class="card" style="padding:var(--sp-3) var(--sp-4); margin-bottom:var(--sp-4)">
+    <div class="savedbar">
+        <span class="muted-2">Saved:</span>
+        @if (_saved.Count == 0)
+        {
+            <span class="muted-2" style="font-style:italic">none yet</span>
+        }
+        @foreach (var s in _saved)
+        {
+            <span class="savedchip">
+                <button class="savedchip-apply" @onclick="() => ApplySaved(s.Query)" title="@s.Query">@s.Name</button>
+                <button class="savedchip-del" @onclick="() => DeleteSaved(s.Id)" title="Delete">×</button>
+            </span>
+        }
+        <span class="flex-1"></span>
+        @if (_showSave)
+        {
+            <input class="input sm" style="max-width:180px" placeholder="Name this search" @bind="_saveName"
+                   @onkeydown="@(e => { if (e.Key == "Enter") SaveCurrent(); })" />
+            <button class="btn primary sm" @onclick="SaveCurrent">Save</button>
+            <button class="btn ghost sm" @onclick="() => _showSave = false">Cancel</button>
+        }
+        else
+        {
+            <button class="btn ghost sm" @onclick="() => { _showSave = true; _saveName = string.Empty; }">★ Save current</button>
+        }
+    </div>
     <div class="row">
         <div class="field flex-1" style="margin:0; min-width:220px">
             <label>Full-text</label>
@@ -93,7 +121,7 @@
                 <thead>
                     <tr>
                         <th style="width:150px">Time</th>
-                        <th style="width:96px">Level</th>
+                        <th style="width:112px">Level</th>
                         @foreach (var col in _columns) { <th style="width:120px" class="mono-sm">@col</th> }
                         <th>Message</th>
                         <th style="width:70px"></th>
@@ -222,6 +250,11 @@
 
     private ElementReference _searchBox;
 
+    private IReadOnlyList<Logrr.Storage.Control.SavedSearch> _saved = [];
+    private bool _showSave;
+    private string _saveName = "";
+    private string? _user;
+
     protected override void OnInitialized()
     {
         _text = QText ?? "";
@@ -229,7 +262,42 @@
         _range = string.IsNullOrEmpty(QRange) ? "24h" : QRange;
         _filter = QFilter ?? "";
         _tickets = TicketLinks.TicketUrlsByEventType(AppId);
+        _saved = Saved.ListByApp(AppId);
         ResetAndFetch();
+    }
+
+    protected override async Task OnInitializedAsync() =>
+        _user = (await AuthState.GetAuthenticationStateAsync()).User.Identity?.Name;
+
+    private string CurrentQueryString()
+    {
+        var parts = new List<string>();
+        void Add(string k, string? v) { if (!string.IsNullOrWhiteSpace(v)) { parts.Add($"{k}={Uri.EscapeDataString(v)}"); } }
+        Add("q", _text);
+        Add("level", _level);
+        Add("range", _customRange ? null : (_range == "24h" ? null : _range));
+        Add("filter", _filter);
+        return string.Join("&", parts);
+    }
+
+    private void ApplySaved(string query) =>
+        Nav.NavigateTo($"/apps/{AppId}/search?{query}", forceLoad: true);
+
+    private void SaveCurrent()
+    {
+        var name = _saveName.Trim();
+        if (name.Length == 0) { return; }
+        Saved.Create(new Logrr.Storage.Control.SavedSearch(
+            Guid.NewGuid().ToString("N"), AppId, name, CurrentQueryString(), _user, DateTimeOffset.UtcNow));
+        _saved = Saved.ListByApp(AppId);
+        _showSave = false;
+        _saveName = "";
+    }
+
+    private void DeleteSaved(string id)
+    {
+        Saved.Delete(id);
+        _saved = Saved.ListByApp(AppId);
     }
 
     private void Run()
