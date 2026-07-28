@@ -31,9 +31,12 @@ var dataPath = DataPath.Resolve(builder.Configuration, builder.Environment.Conte
 var paths = new StoragePaths(dataPath);
 paths.EnsureRootDirectories();
 
-// ---- Self-logging to a rolling file in the data dir (SPEC §13). Never logs to itself.
+// ---- Self-logging: a rolling file in the data dir (SPEC §13), plus the console so startup
+// success/failure is visible when run directly AND in IIS's ASP.NET Core Module stdout log.
+// Without the console sink a startup crash is silent under IIS - which is a debugging trap.
 builder.Host.UseSerilog((ctx, cfg) => cfg
     .MinimumLevel.Information()
+    .WriteTo.Console()
     .WriteTo.File(Path.Combine(dataPath, "logrr-internal.log"),
         rollingInterval: RollingInterval.Day,
         retainedFileCountLimit: 7));
