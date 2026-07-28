@@ -113,5 +113,19 @@ public static class ControlSchema
         );
         CREATE INDEX ix_saved_searches_app ON saved_searches(app_id, name);
         """,
+
+        // v5 — SMTP email destinations: a delivery kind plus SMTP transport config on the
+        // destination, and a rendered subject on the delivery (SPEC §10.1).
+        """
+        ALTER TABLE destinations ADD COLUMN kind INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE destinations ADD COLUMN smtp_host TEXT;
+        ALTER TABLE destinations ADD COLUMN smtp_port INTEGER NOT NULL DEFAULT 587;
+        ALTER TABLE destinations ADD COLUMN smtp_security INTEGER NOT NULL DEFAULT 1;
+        ALTER TABLE destinations ADD COLUMN smtp_username TEXT;
+        ALTER TABLE destinations ADD COLUMN smtp_from TEXT;
+        ALTER TABLE destinations ADD COLUMN smtp_to TEXT;
+        ALTER TABLE destinations ADD COLUMN smtp_subject TEXT NOT NULL DEFAULT '[{{app.name}}] {{event.level}}: {{event.message}}';
+        ALTER TABLE deliveries ADD COLUMN subject TEXT;
+        """,
     ];
 }

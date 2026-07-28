@@ -16,14 +16,14 @@ public sealed class DeliveryStore(ControlDatabase db)
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
             INSERT INTO deliveries (id, destination_id, rule_id, app_id, source, event_type, created_utc,
-              attempt, next_attempt_utc, status, request_body, response_status, response_snippet,
+              attempt, next_attempt_utc, status, request_body, subject, response_status, response_snippet,
               ticket_id, ticket_url, error)
             VALUES ($id, $dest, $rule, $app, $source, $eventType, $created,
-              $attempt, $next, $status, $body, $respStatus, $respSnippet,
+              $attempt, $next, $status, $body, $subject, $respStatus, $respSnippet,
               $ticketId, $ticketUrl, $error)
             ON CONFLICT(id) DO UPDATE SET
               attempt=$attempt, next_attempt_utc=$next, status=$status,
-              request_body=$body, response_status=$respStatus, response_snippet=$respSnippet,
+              request_body=$body, subject=$subject, response_status=$respStatus, response_snippet=$respSnippet,
               ticket_id=$ticketId, ticket_url=$ticketUrl, error=$error;
             """;
         cmd.P("$id", d.Id);
@@ -37,6 +37,7 @@ public sealed class DeliveryStore(ControlDatabase db)
         cmd.P("$next", d.NextAttemptUtc.Ms());
         cmd.P("$status", (int)d.Status);
         cmd.P("$body", d.RequestBody);
+        cmd.P("$subject", d.Subject);
         cmd.P("$respStatus", d.ResponseStatus);
         cmd.P("$respSnippet", d.ResponseSnippet);
         cmd.P("$ticketId", d.TicketId);
@@ -137,6 +138,7 @@ public sealed class DeliveryStore(ControlDatabase db)
         NextAttemptUtc = r.ReadTsNull("next_attempt_utc"),
         Status = (DeliveryStatus)r.GetInt32(r.GetOrdinal("status")),
         RequestBody = r.Str("request_body"),
+        Subject = r.Str("subject"),
         ResponseStatus = r.IntNull("response_status"),
         ResponseSnippet = r.Str("response_snippet"),
         TicketId = r.Str("ticket_id"),

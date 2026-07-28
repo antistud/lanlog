@@ -16,8 +16,11 @@ public sealed class DeliveryDispatcher(
     ISecretProtector protector,
     NotifyOptions options,
     HttpClient http,
-    Func<DateTimeOffset> clock)
+    Func<DateTimeOffset> clock,
+    ISmtpSender? smtpSender = null)
 {
+    private readonly ISmtpSender _smtp = smtpSender ?? new MailKitSmtpSender();
+
     /// <summary>Run the dispatch loop until cancelled (hosted by the server).</summary>
     public async Task RunAsync(CancellationToken ct)
     {
@@ -93,25 +96,38 @@ public sealed class DeliveryDispatcher(
             return;
         }
 
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(TimeSpan.FromSeconds(destination.TimeoutSeconds));
         try
         {
-            using var request = BuildRequest(destination, delivery.RequestBody ?? "");
-            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeoutCts.CancelAfter(TimeSpan.FromSeconds(destination.TimeoutSeconds));
-
-            using var response = await http.SendAsync(request, timeoutCts.Token).ConfigureAwait(false);
-            var body = await SafeReadAsync(response, timeoutCts.Token).ConfigureAwait(false);
-
-            if (response.IsSuccessStatusCode)
+            if (destination.Kind == DestinationKind.Smtp)
             {
-                await OnSuccess(delivery, destination, (int)response.StatusCode, body, now).ConfigureAwait(false);
+                var password = protector.Unprotect(destination.AuthSecret);
+                await _smtp.SendAsync(destination, delivery.Subject ?? "(no subject)",
+                    delivery.RequestBody ?? "", password, timeoutCts.Token).ConfigureAwait(false);
+                // Email has no response body to mine for a ticket; 250 is SMTP's "OK".
+                await OnSuccess(delivery, destination, 250, "", now).ConfigureAwait(false);
             }
             else
             {
-                OnFailure(delivery, destination, (int)response.StatusCode, $"HTTP {(int)response.StatusCode}", body, now);
+                using var request = BuildRequest(destination, delivery.RequestBody ?? "");
+                using var response = await http.SendAsync(request, timeoutCts.Token).ConfigureAwait(false);
+                var body = await SafeReadAsync(response, timeoutCts.Token).ConfigureAwait(false);
+
+                if (response.IsSuccessStatusCode)
+                {
+                    await OnSuccess(delivery, destination, (int)response.StatusCode, body, now).ConfigureAwait(false);
+                }
+                else
+                {
+                    OnFailure(delivery, destination, (int)response.StatusCode, $"HTTP {(int)response.StatusCode}", body, now);
+                }
             }
         }
-        catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException or IOException)
+        // Webhook failures are narrow network faults; an SMTP send can fault in many ways
+        // (auth, TLS, socket, protocol), and any of them is simply a delivery failure to retry.
+        catch (Exception ex) when (destination.Kind == DestinationKind.Smtp
+            || ex is HttpRequestException or OperationCanceledException or IOException)
         {
             OnFailure(delivery, destination, null, ex.GetType().Name + ": " + ex.Message, null, now);
         }

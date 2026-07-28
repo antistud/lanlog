@@ -12,17 +12,20 @@ public sealed class DestinationStore(ControlDatabase db)
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            INSERT INTO destinations (id, name, url, method, content_type, headers,
+            INSERT INTO destinations (id, name, kind, url, method, content_type, headers,
               auth_mode, auth_secret, auth_header_name, body_template,
               ticket_id_path, ticket_url_path, timeout_seconds, max_attempts,
-              rate_limit_per_hour, is_enabled, consecutive_failures, circuit_open_until_utc, created_utc)
-            VALUES ($id, $name, $url, $method, $ct, $headers,
+              rate_limit_per_hour, is_enabled, consecutive_failures, circuit_open_until_utc, created_utc,
+              smtp_host, smtp_port, smtp_security, smtp_username, smtp_from, smtp_to, smtp_subject)
+            VALUES ($id, $name, $kind, $url, $method, $ct, $headers,
               $auth, $secret, $authHeader, $body,
               $idPath, $urlPath, $timeout, $maxAtt,
-              $rate, $en, 0, NULL, $created);
+              $rate, $en, 0, NULL, $created,
+              $smtpHost, $smtpPort, $smtpSec, $smtpUser, $smtpFrom, $smtpTo, $smtpSubject);
             """;
         cmd.P("$id", d.Id);
         cmd.P("$name", d.Name);
+        cmd.P("$kind", (int)d.Kind);
         cmd.P("$url", d.Url);
         cmd.P("$method", d.Method);
         cmd.P("$ct", d.ContentType);
@@ -38,6 +41,13 @@ public sealed class DestinationStore(ControlDatabase db)
         cmd.P("$rate", d.RateLimitPerHour);
         cmd.P("$en", d.IsEnabled ? 1 : 0);
         cmd.P("$created", d.CreatedUtc.Ms());
+        cmd.P("$smtpHost", d.SmtpHost);
+        cmd.P("$smtpPort", d.SmtpPort);
+        cmd.P("$smtpSec", (int)d.SmtpSecurity);
+        cmd.P("$smtpUser", d.SmtpUsername);
+        cmd.P("$smtpFrom", d.SmtpFrom);
+        cmd.P("$smtpTo", d.SmtpTo);
+        cmd.P("$smtpSubject", d.SmtpSubjectTemplate);
         cmd.ExecuteNonQuery();
     }
 
@@ -51,14 +61,17 @@ public sealed class DestinationStore(ControlDatabase db)
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
             UPDATE destinations SET
-              name=$name, url=$url, method=$method, content_type=$ct, headers=$headers,
+              name=$name, kind=$kind, url=$url, method=$method, content_type=$ct, headers=$headers,
               auth_mode=$auth, auth_header_name=$authHeader, body_template=$body,
               ticket_id_path=$idPath, ticket_url_path=$urlPath, timeout_seconds=$timeout,
-              max_attempts=$maxAtt, rate_limit_per_hour=$rate, is_enabled=$en
+              max_attempts=$maxAtt, rate_limit_per_hour=$rate, is_enabled=$en,
+              smtp_host=$smtpHost, smtp_port=$smtpPort, smtp_security=$smtpSec,
+              smtp_username=$smtpUser, smtp_from=$smtpFrom, smtp_to=$smtpTo, smtp_subject=$smtpSubject
             WHERE id=$id;
             """;
         cmd.P("$id", d.Id);
         cmd.P("$name", d.Name);
+        cmd.P("$kind", (int)d.Kind);
         cmd.P("$url", d.Url);
         cmd.P("$method", d.Method);
         cmd.P("$ct", d.ContentType);
@@ -72,6 +85,13 @@ public sealed class DestinationStore(ControlDatabase db)
         cmd.P("$maxAtt", d.MaxAttempts);
         cmd.P("$rate", d.RateLimitPerHour);
         cmd.P("$en", d.IsEnabled ? 1 : 0);
+        cmd.P("$smtpHost", d.SmtpHost);
+        cmd.P("$smtpPort", d.SmtpPort);
+        cmd.P("$smtpSec", (int)d.SmtpSecurity);
+        cmd.P("$smtpUser", d.SmtpUsername);
+        cmd.P("$smtpFrom", d.SmtpFrom);
+        cmd.P("$smtpTo", d.SmtpTo);
+        cmd.P("$smtpSubject", d.SmtpSubjectTemplate);
         cmd.ExecuteNonQuery();
     }
 
@@ -149,6 +169,7 @@ public sealed class DestinationStore(ControlDatabase db)
     {
         Id = r.GetString(r.GetOrdinal("id")),
         Name = r.GetString(r.GetOrdinal("name")),
+        Kind = (DestinationKind)r.GetInt32(r.GetOrdinal("kind")),
         Url = r.GetString(r.GetOrdinal("url")),
         Method = r.GetString(r.GetOrdinal("method")),
         ContentType = r.GetString(r.GetOrdinal("content_type")),
@@ -168,5 +189,12 @@ public sealed class DestinationStore(ControlDatabase db)
         ConsecutiveFailures = r.GetInt32(r.GetOrdinal("consecutive_failures")),
         CircuitOpenUntilUtc = r.ReadTsNull("circuit_open_until_utc"),
         CreatedUtc = r.ReadTs("created_utc"),
+        SmtpHost = r.Str("smtp_host"),
+        SmtpPort = r.GetInt32(r.GetOrdinal("smtp_port")),
+        SmtpSecurity = (SmtpSecurity)r.GetInt32(r.GetOrdinal("smtp_security")),
+        SmtpUsername = r.Str("smtp_username"),
+        SmtpFrom = r.Str("smtp_from"),
+        SmtpTo = r.Str("smtp_to"),
+        SmtpSubjectTemplate = r.GetString(r.GetOrdinal("smtp_subject")),
     };
 }

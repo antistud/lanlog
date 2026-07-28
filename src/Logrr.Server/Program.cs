@@ -109,6 +109,7 @@ builder.Services.AddSingleton<LiveSignals>();
 
 // ---- Notify ----
 builder.Services.AddSingleton<ISecretProtector, DataProtectionSecretProtector>();
+builder.Services.AddSingleton<ISmtpSender, MailKitSmtpSender>();
 builder.Services.AddSingleton<DestinationStore>();
 builder.Services.AddSingleton<RuleStore>();
 builder.Services.AddSingleton<DeliveryStore>();
@@ -130,7 +131,8 @@ builder.Services.AddSingleton(sp => new DeliveryDispatcher(
     sp.GetRequiredService<ISecretProtector>(),
     sp.GetRequiredService<NotifyOptions>(),
     sp.GetRequiredService<IHttpClientFactory>().CreateClient("logrr-webhooks"),
-    clock));
+    clock,
+    sp.GetRequiredService<ISmtpSender>()));
 
 // ---- Ingest pipeline (post-commit fans out to realtime + rules) ----
 builder.Services.AddSingleton(sp =>

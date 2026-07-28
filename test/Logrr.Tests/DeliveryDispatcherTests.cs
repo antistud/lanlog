@@ -27,6 +27,51 @@ public class DeliveryDispatcherTests : IDisposable
         _h.Deliveries, _h.Destinations, _h.TicketLinks, new PlaintextProtector(),
         new NotifyOptions(), new HttpClient(handler), () => _now);
 
+    private DeliveryDispatcher SmtpDispatcher(ISmtpSender smtp) => new(
+        _h.Deliveries, _h.Destinations, _h.TicketLinks, new PlaintextProtector(),
+        new NotifyOptions(), new HttpClient(new StubHandler(_ => new HttpResponseMessage())),
+        () => _now, smtp);
+
+    /// <summary>Captures SMTP sends; optionally throws to simulate a delivery failure.</summary>
+    private sealed class StubSmtp(bool throwOnce = false) : ISmtpSender
+    {
+        public int Calls { get; private set; }
+        public Destination? LastDestination { get; private set; }
+        public string? LastSubject { get; private set; }
+        public string? LastBody { get; private set; }
+        public string? LastPassword { get; private set; }
+
+        public Task SendAsync(Destination destination, string subject, string body, string? password, CancellationToken ct)
+        {
+            Calls++;
+            LastDestination = destination;
+            LastSubject = subject;
+            LastBody = body;
+            LastPassword = password;
+            if (throwOnce)
+            {
+                throw new InvalidOperationException("smtp down");
+            }
+            return Task.CompletedTask;
+        }
+    }
+
+    private void AddSmtp(string id = "m1") => _h.Destinations.Create(new Destination
+    {
+        Id = id, Name = "Ops mail", Kind = DestinationKind.Smtp, Url = "",
+        SmtpHost = "smtp.example", SmtpPort = 587, SmtpSecurity = SmtpSecurity.StartTls,
+        SmtpUsername = "mailer", SmtpFrom = "logrr@example", SmtpTo = "oncall@example",
+        AuthSecret = new PlaintextProtector().Protect("hunter2"),
+        BodyTemplate = "body", MaxAttempts = 6, CreatedUtc = _now,
+    });
+
+    private void EnqueueEmail(string id = "e1", string dest = "m1") => _h.Deliveries.Enqueue(new Delivery
+    {
+        Id = id, DestinationId = dest, AppId = "billing", Source = DeliverySource.Rule,
+        CreatedUtc = _now, Attempt = 0, NextAttemptUtc = _now, Status = DeliveryStatus.Pending,
+        RequestBody = "the body", Subject = "Error: payment failed",
+    });
+
     [Fact]
     public async Task Successful_delivery_extracts_ticket_and_links_it()
     {
@@ -130,6 +175,41 @@ public class DeliveryDispatcherTests : IDisposable
         Assert.True(req.Headers.Contains("X-Logrr-Signature"));
         Assert.True(req.Headers.Contains("X-Logrr-Timestamp"));
         Assert.StartsWith("sha256=", req.Headers.GetValues("X-Logrr-Signature").First());
+    }
+
+    [Fact]
+    public async Task Smtp_destination_sends_email_with_rendered_subject_and_password()
+    {
+        AddSmtp();
+        EnqueueEmail();
+        var smtp = new StubSmtp();
+
+        await SmtpDispatcher(smtp).ProcessDueAsync(CancellationToken.None);
+
+        Assert.Equal(1, smtp.Calls);
+        Assert.Equal("Error: payment failed", smtp.LastSubject);
+        Assert.Equal("the body", smtp.LastBody);
+        Assert.Equal("hunter2", smtp.LastPassword); // decrypted from AuthSecret
+
+        var delivery = _h.Deliveries.Get("e1")!;
+        Assert.Equal(DeliveryStatus.Delivered, delivery.Status);
+        // Email has no response body, so no ticket link is created.
+        Assert.Empty(_h.TicketLinks.ListByApp("billing"));
+    }
+
+    [Fact]
+    public async Task Smtp_send_failure_schedules_a_retry()
+    {
+        AddSmtp();
+        EnqueueEmail();
+
+        await SmtpDispatcher(new StubSmtp(throwOnce: true)).ProcessDueAsync(CancellationToken.None);
+
+        var delivery = _h.Deliveries.Get("e1")!;
+        Assert.Equal(DeliveryStatus.Pending, delivery.Status);
+        Assert.Equal(1, delivery.Attempt);
+        Assert.True(delivery.NextAttemptUtc > _now);
+        Assert.Equal(1, _h.Destinations.Get("m1")!.ConsecutiveFailures);
     }
 
     public void Dispose() => _h.Dispose();

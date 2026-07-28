@@ -183,6 +183,9 @@ public sealed class RuleEngine(
         };
 
         var rendered = WebhookRenderer.Render(template, ctx, destination.IsJson);
+        var subject = destination.Kind == DestinationKind.Smtp
+            ? WebhookRenderer.Render(destination.SmtpSubjectTemplate, ctx, jsonMode: false).Body
+            : null;
 
         deliveries.Enqueue(new Delivery
         {
@@ -197,6 +200,7 @@ public sealed class RuleEngine(
             NextAttemptUtc = now,
             Status = rendered.Ok ? DeliveryStatus.Pending : DeliveryStatus.Failed,
             RequestBody = rendered.Body,
+            Subject = subject,
             Error = rendered.Ok ? null : rendered.Error,
         });
     }

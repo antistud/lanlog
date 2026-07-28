@@ -1,6 +1,7 @@
 @page "/destinations"
 @attribute [Authorize(Roles = "Admin")]
 @rendermode InteractiveServer
+@using Logrr.Notify
 @inject Logrr.Notify.DestinationStore Store
 @inject Logrr.Notify.ManualTicketService Manual
 @inject Logrr.Notify.ISecretProtector Protector
@@ -8,13 +9,13 @@
 <PageTitle>Destinations — Logrr</PageTitle>
 
 <div class="page-head">
-    <div><h1>Destinations</h1><div class="sub">Where tickets go. One protocol out: JSON over HTTP.</div></div>
+    <div><h1>Destinations</h1><div class="sub">Where alerts go — an HTTP webhook or email over SMTP.</div></div>
     <button class="btn primary" @onclick="OpenCreate">＋ New destination</button>
 </div>
 
 @if (_items.Count == 0)
 {
-    <div class="card"><EmptyState Glyph="➤" Title="No destinations yet">Add a webhook target — Gitea, GitHub, Jira, Slack, Teams, or a generic endpoint.</EmptyState></div>
+    <div class="card"><EmptyState Glyph="➤" Title="No destinations yet">Add a webhook target (Gitea, GitHub, Jira, Slack, Teams…) or an email (SMTP) destination.</EmptyState></div>
 }
 else
 {
@@ -23,7 +24,10 @@ else
         {
             <div class="tile">
                 <div class="flex between items-center">
-                    <div><div style="font-weight:600; font-size:var(--fs-lg)">@d.Name</div><div class="mono-sm truncate" style="max-width:280px">@d.Url</div></div>
+                    <div>
+                        <div style="font-weight:600; font-size:var(--fs-lg)">@d.Name</div>
+                        <div class="mono-sm truncate" style="max-width:280px">@(d.Kind == DestinationKind.Smtp ? $"✉ {d.SmtpTo}" : d.Url)</div>
+                    </div>
                     <div class="flex gap-2">
                         @if (d.CircuitOpenUntilUtc is { } c && c > DateTimeOffset.UtcNow) { <span class="badge danger">circuit open</span> }
                         else if (!d.IsEnabled) { <span class="badge">disabled</span> }
@@ -31,7 +35,12 @@ else
                     </div>
                 </div>
                 <div class="flex between items-center mt-2">
-                    <span class="meta">@d.Method · @(d.AuthMode) auth@(d.ConsecutiveFailures > 0 ? $" · {d.ConsecutiveFailures} recent failures" : "")</span>
+                    <span class="meta">
+                        <span class="badge">@(d.Kind == DestinationKind.Smtp ? "SMTP" : "Webhook")</span>
+                        @if (d.Kind == DestinationKind.Smtp) { <text> @d.SmtpHost:@d.SmtpPort · @d.SmtpSecurity</text> }
+                        else { <text> @d.Method · @(d.AuthMode) auth</text> }
+                        @(d.ConsecutiveFailures > 0 ? $" · {d.ConsecutiveFailures} recent failures" : "")
+                    </span>
                     <div class="flex gap-2">
                         <button class="btn sm" @onclick="() => OpenEdit(d)">Edit</button>
                         <button class="btn sm" @onclick="() => Test(d.Id)">Test</button>
@@ -46,47 +55,99 @@ else
 
 <Modal @bind-Open="_show" Title="@(_editId is null ? "New destination" : "Edit destination")" Wide="true">
     <ChildContent>
-        @if (_editId is null)
-        {
-            <div class="field">
-                <label>Start from a preset</label>
-                <select class="input" @onchange="ApplyPreset">
-                    <option value="">— none —</option>
-                    @foreach (var p in Logrr.Notify.DestinationPresets.All) { <option value="@p.Key">@p.Name</option> }
-                </select>
-            </div>
-        }
         <div class="grid cols-2">
             <div class="field"><label>Name</label><input class="input" @bind="_name" /></div>
             <div class="field">
-                <label>Auth</label>
-                <select class="input" @bind="_authMode">
-                    @foreach (var a in Enum.GetValues<Logrr.Notify.AuthMode>()) { <option value="@a">@a</option> }
+                <label>Type</label>
+                <select class="input" @bind="_kind" @bind:after="OnKindChanged">
+                    <option value="Webhook">Webhook (HTTP)</option>
+                    <option value="Smtp">Email (SMTP)</option>
                 </select>
             </div>
         </div>
-        <div class="field"><label>URL</label><input class="input mono" @bind="_url" placeholder="@_urlHint" /></div>
-        @if (_authMode != Logrr.Notify.AuthMode.None)
+
+        @if (_kind == DestinationKind.Webhook)
         {
+            @if (_editId is null)
+            {
+                <div class="field">
+                    <label>Start from a preset</label>
+                    <select class="input" @onchange="ApplyPreset">
+                        <option value="">— none —</option>
+                        @foreach (var p in DestinationPresets.All) { <option value="@p.Key">@p.Name</option> }
+                    </select>
+                </div>
+            }
+            <div class="field"><label>URL</label><input class="input mono" @bind="_url" placeholder="@_urlHint" /></div>
             <div class="field">
-                <label>Auth secret <span class="muted-2">(write-only, encrypted at rest)</span></label>
-                <input class="input" type="password" @bind="_secret" placeholder="@(_editId is null ? "" : "leave blank to keep the current secret")" />
+                <label>Auth</label>
+                <select class="input" @bind="_authMode">
+                    @foreach (var a in Enum.GetValues<AuthMode>()) { <option value="@a">@a</option> }
+                </select>
+            </div>
+            @if (_authMode != AuthMode.None)
+            {
+                <div class="field">
+                    <label>Auth secret <span class="muted-2">(write-only, encrypted at rest)</span></label>
+                    <input class="input" type="password" @bind="_secret" placeholder="@(_editId is null ? "" : "leave blank to keep the current secret")" />
+                </div>
+            }
+            <div class="grid cols-2">
+                <div class="field"><label>Ticket id path</label><input class="input mono" @bind="_idPath" placeholder="$.number" /></div>
+                <div class="field"><label>Ticket url path</label><input class="input mono" @bind="_urlPath" placeholder="$.html_url" /></div>
             </div>
         }
-        <div class="grid cols-2">
-            <div class="field"><label>Ticket id path</label><input class="input mono" @bind="_idPath" placeholder="$.number" /></div>
-            <div class="field"><label>Ticket url path</label><input class="input mono" @bind="_urlPath" placeholder="$.html_url" /></div>
-        </div>
+        else
+        {
+            <div class="grid cols-2">
+                <div class="field"><label>SMTP host</label><input class="input mono" @bind="_smtpHost" placeholder="smtp.office365.com" /></div>
+                <div class="field"><label>Port</label><input class="input mono" type="number" @bind="_smtpPort" /></div>
+            </div>
+            <div class="grid cols-2">
+                <div class="field">
+                    <label>Security</label>
+                    <select class="input" @bind="_smtpSecurity">
+                        <option value="StartTls">STARTTLS (587)</option>
+                        <option value="SslOnConnect">SSL/TLS (465)</option>
+                        <option value="None">None (plain)</option>
+                    </select>
+                </div>
+                <div class="field">
+                    <label>Body format</label>
+                    <select class="input" @bind="_emailHtml">
+                        <option value="false">Plain text</option>
+                        <option value="true">HTML</option>
+                    </select>
+                </div>
+            </div>
+            <div class="grid cols-2">
+                <div class="field"><label>Username <span class="muted-2">(optional)</span></label><input class="input" @bind="_smtpUser" autocomplete="off" /></div>
+                <div class="field">
+                    <label>Password <span class="muted-2">(write-only, encrypted)</span></label>
+                    <input class="input" type="password" @bind="_secret" autocomplete="new-password" placeholder="@(_editId is null ? "" : "leave blank to keep current")" />
+                </div>
+            </div>
+            <div class="grid cols-2">
+                <div class="field"><label>From</label><input class="input mono" @bind="_smtpFrom" placeholder="logrr@you.com" /></div>
+                <div class="field"><label>To <span class="muted-2">(comma-separated)</span></label><input class="input mono" @bind="_smtpTo" placeholder="oncall@you.com, ops@you.com" /></div>
+            </div>
+            <div class="field"><label>Subject template</label><input class="input mono" @bind="_subject" /></div>
+        }
+
         <div class="field">
-            <label>Body template</label>
+            <label>@(_kind == DestinationKind.Smtp ? "Email body template" : "Body template")</label>
             <textarea class="input" @bind="_body" @bind:event="oninput" rows="8"></textarea>
         </div>
         <div class="field">
             <label>Live preview <span class="muted-2">(rendered against a sample event)</span></label>
             @{ var preview = Preview(); }
+            @if (_kind == DestinationKind.Smtp)
+            {
+                <div class="mono-sm" style="margin-bottom:6px"><strong>Subject:</strong> @RenderSubject()</div>
+            }
             <pre class="code" style="border-color:@(preview.Ok ? "var(--border)" : "var(--danger)")">@preview.Body</pre>
             @if (!preview.Ok) { <span class="hint" style="color:var(--danger)">@preview.Error</span> }
-            else { <span class="hint" style="color:var(--good)">✓ valid JSON</span> }
+            else if (_kind == DestinationKind.Webhook) { <span class="hint" style="color:var(--good)">✓ valid JSON</span> }
         </div>
     </ChildContent>
     <Footer>
@@ -96,16 +157,28 @@ else
 </Modal>
 
 @code {
-    private IReadOnlyList<Logrr.Notify.Destination> _items = [];
+    private IReadOnlyList<Destination> _items = [];
     private readonly Dictionary<string, string> _testMsg = new();
     private readonly Dictionary<string, bool> _testOk = new();
 
     private bool _show;
     private string? _editId;
+    private DestinationKind _kind = DestinationKind.Webhook;
     private string _name = "", _url = "", _secret = "", _idPath = "", _urlPath = "", _urlHint = "";
     private string _method = "POST", _contentType = "application/json";
     private string _body = "{\n  \"text\": \"{{event.level}}: {{event.message}}\"\n}";
-    private Logrr.Notify.AuthMode _authMode = Logrr.Notify.AuthMode.None;
+    private AuthMode _authMode = AuthMode.None;
+
+    // SMTP
+    private string _smtpHost = "", _smtpUser = "", _smtpFrom = "", _smtpTo = "";
+    private int _smtpPort = 587;
+    private SmtpSecurity _smtpSecurity = SmtpSecurity.StartTls;
+    private string _subject = "[{{app.name}}] {{event.level}}: {{event.message}}";
+    private bool _emailHtml;
+
+    private const string WebhookBody = "{\n  \"text\": \"{{event.level}}: {{event.message}}\"\n}";
+    private const string EmailBody =
+        "{{event.level}}: {{event.message}}\n\nApp: {{app.name}}\nWhen: {{event.timestamp}}\nOccurrences: {{occurrence.count}}\n\n{{event.exception}}\n\nView in Logrr: {{link.event}}";
 
     protected override void OnInitialized() => Load();
     private void Load() => _items = Store.List();
@@ -113,26 +186,48 @@ else
     private void OpenCreate()
     {
         _editId = null;
+        _kind = DestinationKind.Webhook;
         _name = ""; _url = ""; _secret = ""; _idPath = ""; _urlPath = ""; _urlHint = "";
         _method = "POST"; _contentType = "application/json";
-        _body = "{\n  \"text\": \"{{event.level}}: {{event.message}}\"\n}";
-        _authMode = Logrr.Notify.AuthMode.None;
+        _body = WebhookBody;
+        _authMode = AuthMode.None;
+        _smtpHost = ""; _smtpUser = ""; _smtpFrom = ""; _smtpTo = ""; _smtpPort = 587;
+        _smtpSecurity = SmtpSecurity.StartTls; _emailHtml = false;
+        _subject = "[{{app.name}}] {{event.level}}: {{event.message}}";
         _show = true;
     }
 
-    private void OpenEdit(Logrr.Notify.Destination d)
+    private void OpenEdit(Destination d)
     {
         _editId = d.Id;
-        _name = d.Name; _url = d.Url; _secret = ""; // blank = keep existing secret
+        _kind = d.Kind;
+        _name = d.Name; _url = d.Url; _secret = "";
         _idPath = d.TicketIdPath ?? ""; _urlPath = d.TicketUrlPath ?? "";
         _method = d.Method; _contentType = d.ContentType;
         _body = d.BodyTemplate; _authMode = d.AuthMode;
+        _smtpHost = d.SmtpHost ?? ""; _smtpUser = d.SmtpUsername ?? "";
+        _smtpFrom = d.SmtpFrom ?? ""; _smtpTo = d.SmtpTo ?? ""; _smtpPort = d.SmtpPort;
+        _smtpSecurity = d.SmtpSecurity; _emailHtml = d.IsHtmlEmail;
+        _subject = d.SmtpSubjectTemplate;
         _show = true;
+    }
+
+    // Swap the default body when switching type, unless the operator has customised it.
+    private void OnKindChanged()
+    {
+        if (_kind == DestinationKind.Smtp && (_body == WebhookBody || string.IsNullOrWhiteSpace(_body)))
+        {
+            _body = EmailBody;
+        }
+        else if (_kind == DestinationKind.Webhook && (_body == EmailBody || string.IsNullOrWhiteSpace(_body)))
+        {
+            _body = WebhookBody;
+        }
     }
 
     private void ApplyPreset(ChangeEventArgs e)
     {
-        var preset = Logrr.Notify.DestinationPresets.All.FirstOrDefault(p => p.Key == (string?)e.Value);
+        var preset = DestinationPresets.All.FirstOrDefault(p => p.Key == (string?)e.Value);
         if (preset is null) { return; }
         _name = preset.Name;
         _body = preset.BodyTemplate;
@@ -141,7 +236,7 @@ else
         _urlHint = preset.UrlHint;
     }
 
-    private (string Body, bool Ok, string? Error) Preview()
+    private WebhookContext SampleCtx()
     {
         var now = DateTimeOffset.UtcNow;
         var ev = new Logrr.Core.LogEvent
@@ -153,30 +248,48 @@ else
             EventType = 123456, Source = "Billing.Processor",
             Properties = new Dictionary<string, object?> { ["Amount"] = 49.99, ["UserId"] = 1042L, ["TenantId"] = 7L },
         };
-        var ctx = new Logrr.Notify.WebhookContext
+        return new WebhookContext
         {
             Event = ev, EventId = "20260723:4921", AppId = "billing", AppName = "Billing",
-            Occurrence = new Logrr.Notify.Occurrence { RuleId = "r", DedupeKey = "123456", Count = 42, FirstSeenUtc = now.AddMinutes(-30), LastSeenUtc = now },
+            Occurrence = new Occurrence { RuleId = "r", DedupeKey = "123456", Count = 42, FirstSeenUtc = now.AddMinutes(-30), LastSeenUtc = now },
             BaseUrl = "https://logrr.internal",
         };
-        var isJson = _body.TrimStart().StartsWith('{') || _body.TrimStart().StartsWith('[');
-        var r = Logrr.Notify.WebhookRenderer.Render(_body, ctx, isJson);
+    }
+
+    private (string Body, bool Ok, string? Error) Preview()
+    {
+        var isJson = _kind == DestinationKind.Webhook
+            && (_body.TrimStart().StartsWith('{') || _body.TrimStart().StartsWith('['));
+        var r = WebhookRenderer.Render(_body, SampleCtx(), isJson);
         return (r.Body, r.Ok, r.Error);
     }
 
+    private string RenderSubject() => WebhookRenderer.Render(_subject, SampleCtx(), jsonMode: false).Body;
+
     private void Save()
     {
-        var d = new Logrr.Notify.Destination
+        var d = new Destination
         {
             Id = _editId ?? Guid.NewGuid().ToString("N"),
             Name = string.IsNullOrWhiteSpace(_name) ? "destination" : _name,
-            Url = _url,
+            Kind = _kind,
+            Url = _kind == DestinationKind.Smtp ? "" : _url,
             Method = _method,
-            ContentType = _contentType,
-            AuthMode = _authMode,
+            ContentType = _kind == DestinationKind.Smtp
+                ? (_emailHtml ? "text/html" : "text/plain")
+                : _contentType,
+            AuthMode = _kind == DestinationKind.Smtp ? AuthMode.None : _authMode,
             BodyTemplate = _body,
-            TicketIdPath = string.IsNullOrWhiteSpace(_idPath) ? null : _idPath,
-            TicketUrlPath = string.IsNullOrWhiteSpace(_urlPath) ? null : _urlPath,
+            TicketIdPath = _kind == DestinationKind.Smtp || string.IsNullOrWhiteSpace(_idPath) ? null : _idPath,
+            TicketUrlPath = _kind == DestinationKind.Smtp || string.IsNullOrWhiteSpace(_urlPath) ? null : _urlPath,
+            SmtpHost = string.IsNullOrWhiteSpace(_smtpHost) ? null : _smtpHost,
+            SmtpPort = _smtpPort <= 0 ? 587 : _smtpPort,
+            SmtpSecurity = _smtpSecurity,
+            SmtpUsername = string.IsNullOrWhiteSpace(_smtpUser) ? null : _smtpUser,
+            SmtpFrom = string.IsNullOrWhiteSpace(_smtpFrom) ? null : _smtpFrom,
+            SmtpTo = string.IsNullOrWhiteSpace(_smtpTo) ? null : _smtpTo,
+            SmtpSubjectTemplate = string.IsNullOrWhiteSpace(_subject)
+                ? "[{{app.name}}] {{event.level}}: {{event.message}}" : _subject,
             IsEnabled = true,
             CreatedUtc = DateTimeOffset.UtcNow,
         };

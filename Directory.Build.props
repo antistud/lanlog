@@ -12,4 +12,12 @@
          Development/CI builds run cross-platform; the RID is applied at publish time. -->
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- MailKit/MimeKit power SMTP email destinations. These moderate advisories concern
+         PARSING of untrusted MIME, which Logrr never does (it only composes and sends mail),
+         and no fixed version is published. Suppress solution-wide so audit stays clean. -->
+    <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-9j88-vvj5-vhgr" />
+    <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-g7hc-96xr-gvvx" />
+  </ItemGroup>
+
 </Project>

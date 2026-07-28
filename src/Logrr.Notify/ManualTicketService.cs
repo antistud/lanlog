@@ -76,6 +76,9 @@ public sealed class ManualTicketService(
     {
         var now = clock();
         var rendered = WebhookRenderer.Render(destination.BodyTemplate, ctx, destination.IsJson);
+        var subject = destination.Kind == DestinationKind.Smtp
+            ? WebhookRenderer.Render(destination.SmtpSubjectTemplate, ctx, jsonMode: false).Body
+            : null;
 
         var id = Guid.NewGuid().ToString("N");
         deliveries.Enqueue(new Delivery
@@ -90,6 +93,7 @@ public sealed class ManualTicketService(
             NextAttemptUtc = now,
             Status = rendered.Ok ? DeliveryStatus.Pending : DeliveryStatus.Failed,
             RequestBody = rendered.Body,
+            Subject = subject,
             Error = rendered.Ok ? null : rendered.Error,
         });
 
