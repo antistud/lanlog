@@ -1,5 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
 
+  <PropertyGroup>
+    <!-- Ship the host as Logrr.exe (not Logrr.Server.exe) so it matches web.config's
+         processPath=".\Logrr.exe" and the on-disk layout in docs/SPEC.md §2 / docs/SETUP.md. -->
+    <AssemblyName>Logrr</AssemblyName>
+  </PropertyGroup>
+
   <ItemGroup>
     <PackageReference Include="Serilog.AspNetCore" />
     <PackageReference Include="Serilog.Sinks.File" />
