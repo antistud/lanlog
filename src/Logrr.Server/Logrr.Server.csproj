@@ -11,6 +11,13 @@
     <PackageReference Include="Serilog.Sinks.File" />
   </ItemGroup>
 
+  <!-- ANCM writes its stdout capture to .\logs\stdout_*.log but will NOT create the folder.
+       A publish without it means web.config's stdoutLogEnabled="true" silently produces
+       nothing - which is exactly when you need it. Create it as part of publish. -->
+  <Target Name="CreateAncmLogDir" AfterTargets="Publish">
+    <MakeDir Directories="$(PublishDir)logs" />
+  </Target>
+
   <ItemGroup>
     <ProjectReference Include="..\Logrr.Contracts\Logrr.Contracts.csproj" />
     <ProjectReference Include="..\Logrr.Core\Logrr.Core.csproj" />

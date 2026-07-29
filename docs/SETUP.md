@@ -7,11 +7,20 @@ Ten-minute stand-up on an existing Windows box. See `docs/SPEC.md` for the full 
 On a build machine with the .NET 10 SDK:
 
 ```
-dotnet publish src/Logrr.Server -c Release -r win-x64 --self-contained true -p:PublishTrimmed=false
+dotnet publish src/Logrr.Server -c Release /p:PublishProfile=IIS
 ```
 
 Output lands in `src/Logrr.Server/bin/Release/net10.0/publish/`. It is self-contained —
 **no .NET runtime install is required on the server.**
+
+**Copy the `publish` folder — never the neighbouring `bin/Release/net10.0/win-x64/`.**
+That one is intermediate build output and a convincing decoy: it contains both `Logrr.exe`
+and `web.config`, so a site pointed at it starts and serves HTML. But it has no `wwwroot`
+at all. It ships `Logrr.staticwebassets.runtime.json`, which resolves static assets to
+paths on the *build* machine, so on a server every stylesheet, script and
+`_framework/blazor.web.js` 404s — an unstyled page with no interactivity and no error to
+explain it. Prefer the publish profile over passing `-r win-x64 --self-contained` by hand,
+which puts output in a third location (`bin/Release/net10.0/win-x64/publish/`).
 
 ## 2. Copy to the server
 
@@ -25,7 +34,7 @@ Create the writable **data** directory (kept separate from the app folder so a r
 never overwrites your logs):
 
 ```
-C:\ProgramData\Logrr\
+C:\Logrr\
 ```
 
 ## 3. Prerequisites on the server
@@ -36,6 +45,15 @@ C:\ProgramData\Logrr\
 - **Install the IIS `WebSocket Protocol` role feature.** It is *not* present by default on
   Windows Server. Without it the realtime layer still works, but falls back to
   SSE/long-polling with worse latency (SPEC §2, §8.5).
+
+  Installing the feature is all that is required — WebSockets are enabled at server level
+  by default. **Do not add `<webSocket enabled="true" />` to `web.config`.** IIS locks the
+  `system.webServer/webSocket` section (`overrideModeDefault="Deny"`), so a `web.config`
+  that sets it is rejected with **HTTP 500.19, code 0x80070021, on every request** — and
+  because that happens while IIS parses config, *before* the ASP.NET Core Module runs,
+  there is no ANCM stdout log and no Windows event log entry to explain it. The app appears
+  completely dead while `Logrr.exe` run by hand works perfectly. If you ever see a bare
+  500.19 with an empty `logs\` folder, check `web.config` for a locked section first.
 
 ## 4. Create the site and app pool
 
@@ -50,16 +68,16 @@ C:\ProgramData\Logrr\
 Grant the app pool identity **Modify** on the data directory only:
 
 ```
-icacls "C:\ProgramData\Logrr" /grant "IIS AppPool\<YourPoolName>:(OI)(CI)M"
+icacls "C:\Logrr" /grant "IIS AppPool\<YourPoolName>:(OI)(CI)M"
 ```
 
 The app folder can stay read-only.
 
 ## 6. Point the data path
 
-`web.config` sets `LOGRR_DATA_PATH=C:\ProgramData\Logrr`. Override there if you use a
+`web.config` sets `LOGRR_DATA_PATH=C:\Logrr`. Override there if you use a
 different location. Resolution order: `LOGRR_DATA_PATH` → `appsettings.json`
-(`Logrr:Storage:DataPath`) → `%ProgramData%\Logrr`.
+(`Logrr:Storage:DataPath`) → `C:\Logrr`.
 
 ## 7. First run
 
@@ -67,7 +85,7 @@ Browse the site. On first start Logrr:
 
 - creates `control.db` and the Data Protection `keys\` folder,
 - seeds an `admin` account and writes the password to
-  `C:\ProgramData\Logrr\FIRST-RUN-CREDENTIALS.txt` (also emitted to
+  `C:\Logrr\FIRST-RUN-CREDENTIALS.txt` (also emitted to
   `logrr-internal*.log`),
 - forces a password change on first sign-in and deletes the credentials file afterwards.
 

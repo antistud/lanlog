@@ -61,7 +61,7 @@ C:\inetpub\logrr\             (app, read-only)
   web.config
   appsettings.json
   wwwroot\
-C:\ProgramData\Logrr\         (data, writable — configurable)
+C:\Logrr\                     (data, writable — configurable)
   control.db                  apps, tokens, users, rules, destinations, deliveries
   keys\                       ASP.NET Data Protection keys
   apps\
@@ -72,8 +72,8 @@ C:\ProgramData\Logrr\         (data, writable — configurable)
 ```
 
 Data root resolution: `LOGRR_DATA_PATH` env var → `appsettings.json` →
-`%ProgramData%\Logrr`. **Never** default inside the app folder — a redeploy would
-robocopy over the logs.
+`C:\Logrr` (the system drive root, so a D:-booted box lands on `D:\Logrr`).
+**Never** default inside the app folder — a redeploy would robocopy over the logs.
 
 **First run bootstrap.** If `control.db` is missing: create schema, seed an `admin`
 account with a generated password, write it to `{data}\FIRST-RUN-CREDENTIALS.txt` and
@@ -790,7 +790,7 @@ misconfigured IdP can't lock you out of your own log server.
 ```json
 {
   "Logrr": {
-    "Storage": { "DataPath": "C:\\ProgramData\\Logrr", "MinFreeDiskMb": 5120 },
+    "Storage": { "DataPath": "C:\\Logrr", "MinFreeDiskMb": 5120 },
     "Ingest": {
       "ChannelCapacity": 20000, "BatchSize": 500, "FlushIntervalMs": 500,
       "MaxRequestBytes": 10485760, "MaxEventBytes": 262144

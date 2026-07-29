@@ -48,7 +48,7 @@ LOGRR_DATA_PATH=/tmp/logrr ASPNETCORE_URLS=http://localhost:5199 \
 
 On first run it creates the data directory, seeds an `admin` account, and writes the
 password to `FIRST-RUN-CREDENTIALS.txt` **in the data directory** — the path in
-`LOGRR_DATA_PATH` above, or `%ProgramData%\Logrr` (Windows) / `./data` (elsewhere) if you
+`LOGRR_DATA_PATH` above, or `C:\Logrr` (Windows) / `./data` (elsewhere) if you
 don't set it. Sign in as `admin` with that password.
 
 Send a log line (Seq-compatible CLEF) once you've created an app + token in the UI:

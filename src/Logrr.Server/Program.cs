@@ -24,9 +24,27 @@ var builder = WebApplication.CreateBuilder(args);
 // it up in Development, so running the build output as Production (e.g.
 // `dotnet run --no-launch-profile`) silently loses interactivity. Harmless once published,
 // where the assets are copied into wwwroot.
-builder.WebHost.UseStaticWebAssets();
+// This reads Logrr.staticwebassets.runtime.json, which exists ONLY in build output and
+// hardcodes absolute paths on the build machine. A real publish has no such file and this
+// is a no-op. But deploy the build folder (bin\Release\net10.0\win-x64) by mistake and the
+// file comes along, PhysicalFileProvider throws DirectoryNotFoundException on paths that
+// exist only on the build box, and the process dies here - before Serilog is configured
+// below, so nothing is logged anywhere. Under IIS that is a bare 500.30 with no
+// diagnostics. Translate it into an error that names the actual mistake.
+try
+{
+    builder.WebHost.UseStaticWebAssets();
+}
+catch (DirectoryNotFoundException ex)
+{
+    throw new InvalidOperationException(
+        $"Static web asset root '{ex.Message.Trim()}' does not exist. This almost always means " +
+        "the app was deployed from the BUILD folder (bin\\Release\\net10.0\\win-x64) instead of " +
+        "the PUBLISH folder (bin\\Release\\net10.0\\publish). Redeploy from the publish folder - " +
+        "see docs/SETUP.md.", ex);
+}
 
-// ---- Data path resolution (SPEC §2): env → appsettings → %ProgramData% (never in app folder).
+// ---- Data path resolution (SPEC §2): env → appsettings → C:\Logrr (never in the app folder).
 var dataPath = DataPath.Resolve(builder.Configuration, builder.Environment.ContentRootPath);
 var paths = new StoragePaths(dataPath);
 paths.EnsureRootDirectories();
@@ -188,8 +206,12 @@ builder.Services.AddOptions<CorsOptions>().Configure<IngestCorsPolicy>((cors, po
         .WithMethods("POST", "OPTIONS")
         .WithHeaders("Content-Type", "X-Logrr-ApiKey", "X-Seq-ApiKey", "Authorization")));
 
-builder.WebHost.ConfigureKestrel(k => k.Limits.MaxRequestBodySize =
-    cfgRoot.GetValue("Ingest:MaxRequestBytes", 10_485_760L));
+var maxRequestBytes = cfgRoot.GetValue("Ingest:MaxRequestBytes", 10_485_760L);
+builder.WebHost.ConfigureKestrel(k => k.Limits.MaxRequestBodySize = maxRequestBytes);
+// Under IIS in-process hosting Kestrel is not the server, so the line above is ignored and
+// IIS's own 30 MB default applies instead. Mirror the limit onto the IIS server so raising
+// Ingest:MaxRequestBytes past 30 MB doesn't start rejecting batches only when hosted.
+builder.Services.Configure<IISServerOptions>(o => o.MaxRequestBodySize = maxRequestBytes);
 
 // ---- Hosted services ----
 builder.Services.AddHostedService<DispatcherService>();
@@ -239,8 +261,13 @@ internal static class DataPath
         }
         if (OperatingSystem.IsWindows())
         {
-            var programData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
-            return Path.Combine(programData, "Logrr");
+            // C:\Logrr rather than %ProgramData%\Logrr: the data root is something operators
+            // back up, restore and point tooling at by hand (SPEC §13), and a hidden-by-default
+            // system folder makes that needlessly awkward. Derived from the system drive rather
+            // than hardcoded so a box that boots from D: still lands somewhere sane.
+            var systemDrive = Path.GetPathRoot(Environment.GetFolderPath(Environment.SpecialFolder.System))
+                              ?? "C:\\";
+            return Path.Combine(systemDrive, "Logrr");
         }
         // Non-Windows dev/CI: never inside the app folder's published output.
         return Path.Combine(contentRoot, "data");

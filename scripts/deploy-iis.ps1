@@ -22,11 +22,22 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Source       = "$PSScriptRoot\..\src\Logrr.Server\bin\Release\net10.0\win-x64\publish",
-    [string]$SitePath     = "C:\inetpub\wwwroot\Logrr",
+    # Must match PublishDir in Properties\PublishProfiles\IIS.pubxml. The sibling
+    # net10.0\win-x64 folder is intermediate build output, NOT a publish. It is a
+    # convincing decoy: it has Logrr.exe AND web.config, so deploying it appears to work.
+    # But it has no wwwroot at all - it ships Logrr.staticwebassets.runtime.json instead,
+    # which points the app at asset paths on the BUILD machine. On a server every CSS/JS
+    # request and _framework\blazor.web.js then 404s: unstyled page, no Blazor, no error.
+    [string]$Source       = "$PSScriptRoot\..\src\Logrr.Server\bin\Release\net10.0\publish",
+    # NOT under C:\inetpub\wwwroot. That folder is Default Web Site's physical path, so a
+    # child folder there is also reachable as a plain subdirectory of Default Web Site -
+    # which reads this app's web.config, hits the <aspNetCore> section it may not process
+    # outside an application, and returns 500.19 without ever invoking ANCM (no event log
+    # entry, nothing in stdout). Keep the app off any other site's root. See docs/SETUP.md.
+    [string]$SitePath     = "C:\inetpub\Logrr",
     [string]$SiteName     = "Logrr",
     [string]$PoolName     = "Logrr",
-    [string]$DataPath     = "C:\ProgramData\Logrr",
+    [string]$DataPath     = "C:\Logrr",
     [int]   $Port         = 5443,
     [string]$HostHeader   = "",
     [ValidateSet("outofprocess","inprocess")][string]$HostingModel = "outofprocess"
@@ -73,7 +84,10 @@ $webConfig = @"
           <environmentVariable name="ASPNETCORE_ENVIRONMENT" value="Production" />
         </environmentVariables>
       </aspNetCore>
-      <webSocket enabled="true" />
+      <!-- No <webSocket> element: that section is locked (overrideModeDefault="Deny")
+           at server level, so setting it here means 500.19 / 0x80070021 on every request,
+           raised before ANCM runs - no stdout log, no event log entry. WebSockets come
+           from the 'WebSocket Protocol' role feature instead. -->
     </system.webServer>
   </location>
 </configuration>
