@@ -26,6 +26,12 @@ public class FilterBackendAgreementTests
     private static readonly string?[] Sources = ["Billing", "HealthCheck", "Auth", null];
     private static readonly string[] Regions = ["us", "eu", "apac"];
 
+    // Deliberately overlapping: the corpus carries both a `machine` column and a `Machine`
+    // property, drawn from sets that only partly overlap, so a filter that confuses the two
+    // cannot accidentally agree.
+    private static readonly string?[] MachineColumn = ["GIT4A", "BUILD1", null];
+    private static readonly string[] MachineProperty = ["GIT4A", "PAYJS2"];
+
     private static readonly string[] Filters =
     [
         "Level >= Warning",
@@ -45,6 +51,16 @@ public class FilterBackendAgreementTests
         "(Level >= Warning and TenantId = 42) or UserId = 1042",
         "not (Source = 'HealthCheck' or Level < Warning)",
         "TenantId is not null and not Region = 'us'",
+        // The colliding name, both ways round, and mixed in one expression.
+        "Machine = 'GIT4A'",
+        "Properties.Machine = 'GIT4A'",
+        "Properties.Machine = 'PAYJS2'",
+        "Machine = 'GIT4A' and Properties.Machine = 'GIT4A'",
+        "Machine = 'GIT4A' or Properties.Machine = 'PAYJS2'",
+        "not Properties.Machine = 'GIT4A'",
+        "Properties.Machine is null",
+        "Properties.Machine is not null and Machine is null",
+        "Properties.UserId >= 1000 and Properties.Region like 'u%'",
     ];
 
     [Fact]
@@ -82,6 +98,7 @@ public class FilterBackendAgreementTests
             if (rnd.NextDouble() < 0.70) props["UserId"] = (long)rnd.Next(1000, 1050);
             if (rnd.NextDouble() < 0.60) props["TenantId"] = (long)rnd.Next(40, 46);
             if (rnd.NextDouble() < 0.50) props["Region"] = Regions[rnd.Next(Regions.Length)];
+            if (rnd.NextDouble() < 0.60) props["Machine"] = MachineProperty[rnd.Next(MachineProperty.Length)];
 
             var e = new LogEvent
             {
@@ -90,6 +107,7 @@ public class FilterBackendAgreementTests
                 Message = Messages[rnd.Next(Messages.Length)],
                 Exception = rnd.NextDouble() < 0.5 ? null : "System.NullReferenceException: obj",
                 Source = Sources[rnd.Next(Sources.Length)],
+                Machine = MachineColumn[rnd.Next(MachineColumn.Length)],
                 Properties = props,
             };
             list.Add((i + 1, e)); // rowid is assigned in insertion order starting at 1
@@ -122,8 +140,8 @@ public class FilterBackendAgreementTests
         using var tx = conn.BeginTransaction();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            INSERT INTO events (id, ts, level, message, exception, source, properties)
-            VALUES ($id, $ts, $level, $message, $exception, $source, $properties);
+            INSERT INTO events (id, ts, level, message, exception, source, machine, properties)
+            VALUES ($id, $ts, $level, $message, $exception, $source, $machine, $properties);
             """;
         var pId = cmd.CreateParameter(); pId.ParameterName = "$id"; cmd.Parameters.Add(pId);
         var pTs = cmd.CreateParameter(); pTs.ParameterName = "$ts"; cmd.Parameters.Add(pTs);
@@ -131,6 +149,7 @@ public class FilterBackendAgreementTests
         var pMsg = cmd.CreateParameter(); pMsg.ParameterName = "$message"; cmd.Parameters.Add(pMsg);
         var pExc = cmd.CreateParameter(); pExc.ParameterName = "$exception"; cmd.Parameters.Add(pExc);
         var pSrc = cmd.CreateParameter(); pSrc.ParameterName = "$source"; cmd.Parameters.Add(pSrc);
+        var pMachine = cmd.CreateParameter(); pMachine.ParameterName = "$machine"; cmd.Parameters.Add(pMachine);
         var pProps = cmd.CreateParameter(); pProps.ParameterName = "$properties"; cmd.Parameters.Add(pProps);
 
         foreach (var (id, e) in events)
@@ -141,6 +160,7 @@ public class FilterBackendAgreementTests
             pMsg.Value = e.Message;
             pExc.Value = (object?)e.Exception ?? DBNull.Value;
             pSrc.Value = (object?)e.Source ?? DBNull.Value;
+            pMachine.Value = (object?)e.Machine ?? DBNull.Value;
             pProps.Value = PropertyValue.ToJson(e.Properties);
             cmd.ExecuteNonQuery();
         }

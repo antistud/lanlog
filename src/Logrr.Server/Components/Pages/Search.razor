@@ -2,6 +2,7 @@
 @attribute [Authorize]
 @rendermode InteractiveServer
 @using System.Text.Json
+@using Logrr.Core.Filters
 @using Logrr.Server.Exploring
 @inject Logrr.Storage.EventReader Reader
 @inject Logrr.Notify.TicketLinkStore TicketLinks
@@ -182,8 +183,8 @@
                                                         @if (p.Filterable)
                                                         {
                                                             <span class="propacts">
-                                                                <button class="tiny" title="Filter to this" @onclick="() => AddFilter(new FieldFilter(p.Name, p.Rendered))">＋</button>
-                                                                <button class="tiny" title="Exclude this" @onclick="() => ExcludeFilter(new FieldFilter(p.Name, p.Rendered))">－</button>
+                                                                <button class="tiny" title="Filter to this" @onclick="() => AddFilter(new FieldFilter(FilterIdent.ForProperty(p.Name), p.Rendered))">＋</button>
+                                                                <button class="tiny" title="Exclude this" @onclick="() => ExcludeFilter(new FieldFilter(FilterIdent.ForProperty(p.Name), p.Rendered))">－</button>
                                                             </span>
                                                         }
                                                     </div>
@@ -348,9 +349,13 @@
         _partitions = 0;
         _selected = -1;
         _expanded.Clear();
+        // Columns are discovered from the result set, so they have to be rediscovered with
+        // it — otherwise chips from the previous query linger over unrelated (or no) rows.
+        _propertyKeys.Clear();
         Fetch(reset: true);
         LoadAggregates();
         DiscoverColumns();
+        _columns.RemoveWhere(c => !_propertyKeys.Contains(c));
     }
 
     private void More() => Fetch(reset: false);

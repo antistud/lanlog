@@ -176,17 +176,24 @@ internal sealed class ComparisonNode(string ident, CompareOp op, FilterValue? va
         }
     }
 
-    private static string SqlColumn(string ident) => ident switch
+    private static string SqlColumn(string ident)
     {
-        "Level" => "level",
-        "Message" => "message",
-        "Exception" => "exception",
-        "Source" => "source",
-        "TraceId" => "trace_id",
-        "SpanId" => "span_id",
-        "Machine" => "machine",
-        _ => $"json_extract(properties, '$.{ident}')",
-    };
+        if (FilterIdent.IsProperty(ident))
+        {
+            return $"json_extract(properties, '$.{FilterIdent.PropertyName(ident)}')";
+        }
+        return ident switch
+        {
+            "Level" => "level",
+            "Message" => "message",
+            "Exception" => "exception",
+            "Source" => "source",
+            "TraceId" => "trace_id",
+            "SpanId" => "span_id",
+            "Machine" => "machine",
+            _ => $"json_extract(properties, '$.{ident}')",
+        };
+    }
 
     private static bool Compare(object actual, CompareOp op, FilterValue expected)
     {

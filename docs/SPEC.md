@@ -390,7 +390,8 @@ expr       := term (('and' | 'or') term)*
 term       := '(' expr ')' | 'not' term | comparison
 comparison := ident op value
 op         := '=' | '!=' | '>' | '>=' | '<' | '<=' | 'like' | 'is null' | 'is not null'
-ident      := 'Level' | 'Message' | 'Exception' | 'Source' | 'TraceId' | <property>
+ident      := builtin | <property> | 'Properties.' <property>
+builtin    := 'Level' | 'Message' | 'Exception' | 'Source' | 'TraceId' | 'SpanId' | 'Machine'
 value      := string | number | bool | level-name
 ```
 
@@ -398,7 +399,15 @@ value      := string | number | bool | level-name
 Level >= Warning and UserId = 1042
 Message like '%timeout%' and not Source = 'HealthCheck'
 Exception is not null
+Properties.Machine = 'GIT4A'
 ```
+
+A bare identifier is a built-in when it names one and a property otherwise. That is terse
+for the common case but ambiguous when an event carries a property whose name collides with
+a built-in — `Machine = 'x'` then means the column, matches nothing, and gives no hint why.
+The `Properties.` qualifier names the property unambiguously. Click-to-filter in the UI
+emits it automatically for colliding names (`FilterIdent.ForProperty`), so what the user
+clicked is what the filter means.
 
 **Two compilation targets, one parser.** This is the load-bearing design decision of the
 whole project:

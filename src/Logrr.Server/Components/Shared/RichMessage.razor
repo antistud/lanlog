@@ -1,5 +1,6 @@
 @using System.Text.Json
 @using Logrr.Core
+@using Logrr.Core.Filters
 @using Logrr.Server.Exploring
 
 @if (_segments.Count == 0)
@@ -26,7 +27,7 @@ else
                 <span class="tok" role="button" tabindex="-1"
                       title="Filter by @seg.Name = @v.Value.Display"
                       @onclick:stopPropagation="true"
-                      @onclick="() => OnFilter.InvokeAsync(new FieldFilter(seg.Name, v.Value.Rendered))">@v.Value.Display</span>
+                      @onclick="() => OnFilter.InvokeAsync(new FieldFilter(FilterIdent.ForProperty(seg.Name), v.Value.Rendered))">@v.Value.Display</span>
             }
             else
             {

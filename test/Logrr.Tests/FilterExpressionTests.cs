@@ -80,4 +80,55 @@ public class FilterExpressionTests
     {
         Assert.False(FilterExpression.TryParse("UserId')='1' or '1'=('1 = 1", out _, out _));
     }
+
+    private static LogEvent WithMachineProperty() => new()
+    {
+        Timestamp = DateTimeOffset.UnixEpoch,
+        Level = LogLevel.Information,
+        Message = "PayJs Warm",
+        Machine = null,                       // nothing ever set the column
+        Properties = new Dictionary<string, object?> { ["Machine"] = "GIT4A" },
+    };
+
+    [Fact]
+    public void Qualified_ident_reads_the_property_not_the_colliding_column()
+    {
+        var e = WithMachineProperty();
+        Assert.True(FilterExpression.Parse("Properties.Machine = 'GIT4A'").Evaluate(e));
+        // The bare name still means the built-in column, which is null here.
+        Assert.False(FilterExpression.Parse("Machine = 'GIT4A'").Evaluate(e));
+    }
+
+    [Fact]
+    public void Qualified_ident_still_resolves_when_there_is_no_collision()
+    {
+        var e = Event(props: ("UserId", 1042L));
+        Assert.True(FilterExpression.Parse("Properties.UserId = 1042").Evaluate(e));
+        Assert.True(FilterExpression.Parse("UserId = 1042").Evaluate(e));
+    }
+
+    [Fact]
+    public void Qualifier_is_applied_only_to_names_that_collide()
+    {
+        Assert.Equal("Properties.Machine", FilterIdent.ForProperty("Machine"));
+        Assert.Equal("Properties.Source", FilterIdent.ForProperty("Source"));
+        Assert.Equal("UserId", FilterIdent.ForProperty("UserId"));
+    }
+
+    [Theory]
+    [InlineData("Properties.Machine = 'GIT4A'")]
+    [InlineData("Properties.UserId >= 1000")]
+    public void Qualified_expressions_parse(string expr)
+    {
+        Assert.True(FilterExpression.TryParse(expr, out _, out var err), err);
+    }
+
+    [Theory]
+    [InlineData("Properties. = 'x'")]            // empty property name
+    [InlineData("Properties.a.b = 'x'")]         // the qualifier does not admit nested paths
+    [InlineData("Properties.UserId') = ('1 = 1")] // injection through the qualifier
+    public void Malformed_qualified_idents_are_rejected(string expr)
+    {
+        Assert.False(FilterExpression.TryParse(expr, out _, out _));
+    }
 }

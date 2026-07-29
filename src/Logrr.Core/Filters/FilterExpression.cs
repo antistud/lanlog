@@ -67,16 +67,15 @@ public sealed partial class FilterExpression
     [GeneratedRegex("^[A-Za-z_][A-Za-z0-9_]*$")]
     private static partial Regex PropertyIdentRegex();
 
-    private static readonly HashSet<string> BuiltIns =
-        ["Level", "Message", "Exception", "Source", "TraceId", "SpanId", "Machine"];
-
     internal static void ValidateIdent(string ident, int position)
     {
-        if (BuiltIns.Contains(ident))
+        if (FilterIdent.IsBuiltIn(ident))
         {
             return;
         }
-        if (!PropertyIdentRegex().IsMatch(ident))
+        // A "Properties."-qualified identifier is validated on the name it resolves to, so
+        // the qualifier can never widen what a property name is allowed to contain.
+        if (!PropertyIdentRegex().IsMatch(FilterIdent.PropertyName(ident)))
         {
             throw new FilterParseException($"invalid identifier '{ident}'", position);
         }

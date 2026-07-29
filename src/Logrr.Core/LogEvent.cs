@@ -43,15 +43,22 @@ public sealed class LogEvent
     /// Look up a comparable value by the identifier used in a filter expression. Built-in
     /// identifiers resolve to their column; anything else falls through to a property.
     /// </summary>
-    public object? Resolve(string ident) => ident switch
+    public object? Resolve(string ident)
     {
-        "Level" => (long)(int)Level,
-        "Message" => Message,
-        "Exception" => Exception,
-        "Source" => Source,
-        "TraceId" => TraceId,
-        "SpanId" => SpanId,
-        "Machine" => Machine,
-        _ => Properties.TryGetValue(ident, out var v) ? v : null,
-    };
+        if (Filters.FilterIdent.IsProperty(ident))
+        {
+            return Properties.TryGetValue(Filters.FilterIdent.PropertyName(ident), out var p) ? p : null;
+        }
+        return ident switch
+        {
+            "Level" => (long)(int)Level,
+            "Message" => Message,
+            "Exception" => Exception,
+            "Source" => Source,
+            "TraceId" => TraceId,
+            "SpanId" => SpanId,
+            "Machine" => Machine,
+            _ => Properties.TryGetValue(ident, out var v) ? v : null,
+        };
+    }
 }
