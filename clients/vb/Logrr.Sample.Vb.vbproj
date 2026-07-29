@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- NOT "Logrr.Sample.Vb". VB prefixes every type with the root namespace, so a root
+         starting with "Logrr" makes `Imports Logrr.Client` resolve against this project's
+         own namespace instead of the package - "namespace or type 'Client' is not defined".
+         Keeping the root clear of "Logrr" avoids needing Global.Logrr.Client everywhere. -->
+    <RootNamespace>LogrrVbSample</RootNamespace>
+    <OptionStrict>On</OptionStrict>
+    <OptionExplicit>On</OptionExplicit>
+    <!-- Inherited from the repo root Directory.Build.props but C#-only; VB ignores them and
+         setting them explicitly keeps the build output free of noise. -->
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Sample-only: the concrete logging package, for LoggerFactory.Create. Logrr.Client
+         itself depends on Logging.Abstractions alone (SPEC §3 keeps runtime deps short). -->
+    <PackageReference Include="Microsoft.Extensions.Logging" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Referenced as a project so the samples break loudly if the client API changes.
+         Real consumers use: dotnet add package Logrr.Client -->
+    <ProjectReference Include="..\..\src\Logrr.Client\Logrr.Client.csproj" />
+  </ItemGroup>
+
+</Project>

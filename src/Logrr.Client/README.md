@@ -9,6 +9,9 @@ app. Targets `netstandard2.0`, so it runs on .NET Framework 4.6.1+ through .NET 
 dotnet add package Logrr.Client
 ```
 
+Examples below are C#. For **VB.NET** — including WebForms `Global.asax` and WinForms
+patterns, and the VB-specific traps — see [`clients/vb/`](../../clients/vb/README.md).
+
 ## Use it with Microsoft.Extensions.Logging (ASP.NET Core, Worker, Generic Host)
 
 One line in your logging setup:

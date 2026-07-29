@@ -8,6 +8,11 @@
     <Project Path="src/Logrr.Server/Logrr.Server.csproj" />
     <Project Path="src/Logrr.Storage/Logrr.Storage.csproj" />
   </Folder>
+  <Folder Name="/clients/">
+    <!-- Sample, not shipped. In the solution so the VB examples are compiled and cannot
+         drift from the Logrr.Client API. -->
+    <Project Path="clients/vb/Logrr.Sample.Vb.vbproj" />
+  </Folder>
   <Folder Name="/test/">
     <Project Path="test/Logrr.LoadTests/Logrr.LoadTests.csproj" />
     <Project Path="test/Logrr.Tests/Logrr.Tests.csproj" />

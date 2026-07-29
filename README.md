@@ -75,6 +75,11 @@ already use `Serilog.Sinks.Seq`, you can point it at Logrr instead and skip the 
 
 Build the package with `dotnet pack src/Logrr.Client -c Release`.
 
+**VB.NET:** worked, compiled examples live in [`clients/vb/`](clients/vb/README.md) —
+direct client, `Microsoft.Extensions.Logging`, ASP.NET Framework `Global.asax`, WinForms,
+and the VB-specific traps (message templates vs interpolation, root-namespace collisions,
+no `Async Sub Main`). Run them with `dotnet run --project clients/vb`.
+
 ## Implementation status
 
 **Phase 1 (usable) is implemented and tested end-to-end**, plus much of Phase 2's

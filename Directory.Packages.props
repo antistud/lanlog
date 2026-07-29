@@ -18,6 +18,8 @@
     <PackageVersion Include="MailKit" Version="4.13.0" />
     <!-- Logrr.Client (netstandard2.0) dependencies. -->
     <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0" />
+    <!-- clients/vb sample only (LoggerFactory.Create). Not a Logrr.Client dependency. -->
+    <PackageVersion Include="Microsoft.Extensions.Logging" Version="10.0.0" />
     <PackageVersion Include="System.Text.Json" Version="10.0.0" />
     <PackageVersion Include="Serilog.AspNetCore" Version="9.0.0" />
     <PackageVersion Include="Serilog.Sinks.File" Version="6.0.0" />
