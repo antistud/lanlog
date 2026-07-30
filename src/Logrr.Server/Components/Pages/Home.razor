@@ -4,7 +4,9 @@
 @implements IDisposable
 @inject Logrr.Storage.Control.AppStore Apps
 @inject Logrr.Storage.StatsReader Stats
+@inject Logrr.Storage.Control.AckStore Acks
 @inject Logrr.Server.LiveSignals Signals
+@inject AuthenticationStateProvider AuthState
 
 <PageTitle>Apps — Logrr</PageTitle>
 
@@ -37,7 +39,8 @@ else
         {
             var s = _stats.GetValueOrDefault(app.Id);
             var errors = (s?.CountByLevel.GetValueOrDefault("Error") ?? 0) + (s?.CountByLevel.GetValueOrDefault("Fatal") ?? 0);
-            <a class="tile @(errors > 0 ? "alert" : "")" href="@($"/apps/{app.Id}/tail")">
+            var unacked = s?.UnacknowledgedErrors ?? 0;
+            <a class="tile @(unacked > 0 ? "alert" : "")" href="@($"/apps/{app.Id}/tail")">
                 <div class="flex between items-center">
                     <div>
                         <div style="font-weight:600; font-size:var(--fs-lg); letter-spacing:-.01em">@app.Name</div>
@@ -47,9 +50,20 @@ else
                     {
                         <span class="badge">disabled</span>
                     }
+                    else if (unacked > 0)
+                    {
+                        <span class="flex gap-2 items-center">
+                            <span class="badge danger">@Format(unacked) errors</span>
+                            <button class="btn ghost sm" title="Acknowledge every error seen so far"
+                                    @onclick="() => Acknowledge(app.Id)"
+                                    @onclick:preventDefault="true" @onclick:stopPropagation="true">✓ Ack</button>
+                        </span>
+                    }
                     else if (errors > 0)
                     {
-                        <span class="badge danger">@Format(errors) errors</span>
+                        <button class="btn ghost sm" title="@AckedTitle(app.Id) — click to undo"
+                                @onclick="() => Unacknowledge(app.Id)"
+                                @onclick:preventDefault="true" @onclick:stopPropagation="true">✓ acknowledged</button>
                     }
                 </div>
 
@@ -100,6 +114,7 @@ else
 @code {
     private IReadOnlyList<Logrr.Storage.Control.AppRecord> _apps = [];
     private readonly Dictionary<string, Logrr.Contracts.AppStatsDto> _stats = new();
+    private readonly Dictionary<string, Logrr.Storage.Control.Ack?> _latestAck = new();
     private System.Threading.Timer? _timer;
 
     private bool _showCreate;
@@ -136,7 +151,38 @@ else
         foreach (var app in _apps)
         {
             _stats[app.Id] = Stats.GetStats(app.Id, DateTimeOffset.UtcNow);
+            _latestAck[app.Id] = Acks.ListByApp(app.Id).FirstOrDefault(); // newest first
         }
+    }
+
+    /// <summary>Acknowledge every error this app has recorded so far; later ones alert again.</summary>
+    private async Task Acknowledge(string appId)
+    {
+        var auth = await AuthState.GetAuthenticationStateAsync();
+        Acks.Acknowledge(new Logrr.Storage.Control.Ack(
+            appId,
+            Logrr.Storage.Control.Ack.AllScope,
+            Logrr.Storage.EventPartition.UnixMicros(DateTimeOffset.UtcNow),
+            Note: null,
+            AckedBy: auth.User.Identity?.Name,
+            CreatedUtc: DateTimeOffset.UtcNow));
+        Load();
+    }
+
+    private void Unacknowledge(string appId)
+    {
+        Acks.ClearAll(appId);
+        Load();
+    }
+
+    private string AckedTitle(string appId)
+    {
+        if (_latestAck.GetValueOrDefault(appId) is not { } ack)
+        {
+            return "Acknowledged";
+        }
+        var who = ack.AckedBy is null ? "" : $" by {ack.AckedBy}";
+        return $"Acknowledged{who} at {ack.CreatedUtc.ToLocalTime():yyyy-MM-dd HH:mm}";
     }
 
     private void CreateApp()

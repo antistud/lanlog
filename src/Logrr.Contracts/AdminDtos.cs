@@ -25,6 +25,9 @@ public sealed record AppStatsDto
         new Dictionary<string, long>();
     public long StorageBytes { get; init; }
     public DateTimeOffset? LastEventUtc { get; init; }
+
+    /// <summary>Error + Fatal events not covered by an acknowledgement — what the overview alerts on.</summary>
+    public long UnacknowledgedErrors { get; init; }
 }
 
 /// <summary>Liveness + queue/disk snapshot (SPEC §13). 503 when the disk guard trips.</summary>

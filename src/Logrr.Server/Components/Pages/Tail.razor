@@ -5,6 +5,8 @@
 @inject Logrr.Realtime.RealtimeBroker Broker
 @inject Logrr.Notify.TicketLinkStore TicketLinks
 @inject Logrr.Storage.EventReader Reader
+@inject Logrr.Storage.Control.AckStore Acks
+@inject AuthenticationStateProvider AuthState
 
 <PageTitle>@AppId · live tail — Logrr</PageTitle>
 
@@ -63,7 +65,7 @@
     <table class="data">
         <thead>
             <tr>
-                <th style="width:120px">Time</th>
+                <th style="width:200px">Time</th>
                 <th style="width:110px">Level</th>
                 <th>Message</th>
             </tr>
@@ -75,8 +77,9 @@
             }
             @foreach (var row in _rows)
             {
+                var ts = row.Event.Timestamp.ToLocalTime();
                 <tr class="clickable" @onclick="() => Toggle(row)">
-                    <td class="mono-sm nowrap">@row.Event.Timestamp.ToLocalTime().ToString("HH:mm:ss.fff")</td>
+                    <td class="mono-sm nowrap"><span class="muted">@ts.ToString("yyyy-MM-dd")</span> @ts.ToString("HH:mm:ss.fff")</td>
                     <td><LevelChip Level="row.Event.Level" /></td>
                     <td class="truncate" style="max-width:640px">
                         @row.Event.Message
@@ -105,6 +108,29 @@
                                 {
                                     <pre class="code">@System.Text.Json.JsonSerializer.Serialize(props, Indented)</pre>
                                 }
+                                <div class="flex gap-2 items-center">
+                                    <a class="btn ghost sm" href="@($"/apps/{AppId}/events/{row.Event.Id}")">Open event</a>
+                                    @if (row.Event is { Level: >= LogLevel.Error, EventType: not null })
+                                    {
+                                        @if (AckedByType(row.Event))
+                                        {
+                                            <button class="btn ghost sm" @onclick="() => Unacknowledge(row.Event)">
+                                                ✓ Acknowledged — undo
+                                            </button>
+                                        }
+                                        else if (_acks.Covers(row.Event.EventType, Micros(row.Event.Timestamp)))
+                                        {
+                                            <span class="badge" title="Covered by an app-wide acknowledgement — undo it from the overview">
+                                                ✓ acknowledged
+                                            </span>
+                                        }
+                                        else
+                                        {
+                                            <button class="btn sm" title="Stop this error alerting on the overview until it happens again"
+                                                    @onclick="() => Acknowledge(row.Event)">✓ Acknowledge</button>
+                                        }
+                                    }
+                                </div>
                             </div>
                         </td>
                     </tr>
@@ -134,11 +160,43 @@
     private int _droppedTotal;
 
     private IReadOnlyDictionary<long, string> _tickets = new Dictionary<long, string>();
+    private Logrr.Storage.Control.AckSnapshot _acks = Logrr.Storage.Control.AckSnapshot.Empty;
 
     protected override void OnInitialized()
     {
         _tickets = TicketLinks.TicketUrlsByEventType(AppId);
+        _acks = Acks.Snapshot(AppId);
         Subscribe();
+    }
+
+    private static long Micros(DateTimeOffset ts) => Logrr.Storage.EventPartition.UnixMicros(ts);
+
+    /// <summary>Acked by its own event type — the only ack this row can undo on its own.</summary>
+    private bool AckedByType(LogEventDto e) =>
+        e.EventType is { } type
+        && _acks.ByEventType.TryGetValue(type, out var through)
+        && Micros(e.Timestamp) <= through;
+
+    /// <summary>Acknowledge every occurrence of this error type seen so far (SPEC §7 overview alert).</summary>
+    private async Task Acknowledge(LogEventDto e)
+    {
+        if (e.EventType is not { } type) { return; }
+        var auth = await AuthState.GetAuthenticationStateAsync();
+        Acks.Acknowledge(new Logrr.Storage.Control.Ack(
+            AppId,
+            Logrr.Storage.Control.Ack.ScopeFor(type),
+            Micros(DateTimeOffset.UtcNow),
+            Note: e.Message,
+            AckedBy: auth.User.Identity?.Name,
+            CreatedUtc: DateTimeOffset.UtcNow));
+        _acks = Acks.Snapshot(AppId);
+    }
+
+    private void Unacknowledge(LogEventDto e)
+    {
+        if (e.EventType is not { } type) { return; }
+        Acks.Clear(AppId, Logrr.Storage.Control.Ack.ScopeFor(type));
+        _acks = Acks.Snapshot(AppId);
     }
 
     private void Subscribe()

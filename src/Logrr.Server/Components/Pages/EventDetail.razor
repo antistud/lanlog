@@ -3,6 +3,7 @@
 @rendermode InteractiveServer
 @inject Logrr.Storage.EventReader Reader
 @inject Logrr.Storage.Control.AppStore Apps
+@inject Logrr.Storage.Control.AckStore Acks
 @inject Logrr.Notify.TicketLinkStore TicketLinks
 @inject Logrr.Notify.DestinationStore Destinations
 @inject Logrr.Notify.ManualTicketService Manual
@@ -20,6 +21,18 @@
         @if (_link is not null && _link.TicketUrl is not null)
         {
             <a class="badge accent" href="@_link.TicketUrl" target="_blank">🎫 Linked ticket</a>
+        }
+        @if (CanAcknowledge)
+        {
+            @if (_ack is null)
+            {
+                <button class="btn" title="Stop this error alerting on the overview until it happens again"
+                        @onclick="Acknowledge">✓ Acknowledge</button>
+            }
+            else
+            {
+                <button class="btn ghost" title="@AckTitle" @onclick="Unacknowledge">✓ Acknowledged — undo</button>
+            }
         }
         <button class="btn primary" @onclick="() => _showTicket = true" disabled="@(_event is null)">Create ticket</button>
     </div>
@@ -169,6 +182,7 @@ else
     private readonly List<LogEventDto> _context = new();
     private bool _contextLoaded;
     private Logrr.Notify.TicketLink? _link;
+    private Logrr.Storage.Control.Ack? _ack;
     private long _occurrences;
     private IReadOnlyList<Logrr.Notify.Destination> _destinations = [];
 
@@ -189,6 +203,7 @@ else
         {
             _link = TicketLinks.FindByEventType(AppId, type);
             _occurrences = Reader.CountByEventType(AppId, type);
+            LoadAck();
         }
         if (_event.TraceId is { } trace)
         {
@@ -210,6 +225,50 @@ else
             Limit = 80,
         });
         _context.AddRange(page.Events); // newest-first
+    }
+
+    /// <summary>Only errors alert on the overview, and an ack is scoped to an event type.</summary>
+    private bool CanAcknowledge => _event is { Level: >= LogLevel.Error, EventType: not null };
+
+    private string AckTitle => _ack is null ? ""
+        : $"Acknowledged{(_ack.AckedBy is null ? "" : $" by {_ack.AckedBy}")} at " +
+          $"{_ack.CreatedUtc.ToLocalTime():yyyy-MM-dd HH:mm} — click to undo";
+
+    /// <summary>
+    /// An ack only counts while its watermark still covers this event; a recurrence after the
+    /// ack is unacknowledged again, and the button offers to acknowledge afresh.
+    /// </summary>
+    private void LoadAck()
+    {
+        _ack = null;
+        if (_event?.EventType is not { } type) { return; }
+        var scope = Logrr.Storage.Control.Ack.ScopeFor(type);
+        if (Acks.Find(AppId, scope) is { } ack
+            && ack.ThroughTs >= Logrr.Storage.EventPartition.UnixMicros(_event.Timestamp))
+        {
+            _ack = ack;
+        }
+    }
+
+    private async Task Acknowledge()
+    {
+        if (_event?.EventType is not { } type) { return; }
+        var auth = await AuthState.GetAuthenticationStateAsync();
+        Acks.Acknowledge(new Logrr.Storage.Control.Ack(
+            AppId,
+            Logrr.Storage.Control.Ack.ScopeFor(type),
+            Logrr.Storage.EventPartition.UnixMicros(DateTimeOffset.UtcNow),
+            Note: _event.Message,
+            AckedBy: auth.User.Identity?.Name,
+            CreatedUtc: DateTimeOffset.UtcNow));
+        LoadAck();
+    }
+
+    private void Unacknowledge()
+    {
+        if (_event?.EventType is not { } type) { return; }
+        Acks.Clear(AppId, Logrr.Storage.Control.Ack.ScopeFor(type));
+        LoadAck();
     }
 
     private async Task SubmitTicket()

@@ -127,5 +127,19 @@ public static class ControlSchema
         ALTER TABLE destinations ADD COLUMN smtp_subject TEXT NOT NULL DEFAULT '[{{app.name}}] {{event.level}}: {{event.message}}';
         ALTER TABLE deliveries ADD COLUMN subject TEXT;
         """,
+
+        // v6 — error acknowledgements: a watermark per scope so a handled error stops
+        // raising the overview alert, while a later occurrence raises it again (SPEC §7).
+        """
+        CREATE TABLE acks (
+          app_id     TEXT NOT NULL,
+          scope      TEXT NOT NULL,     -- '*' = every error in the app, else the event type
+          through_ts INTEGER NOT NULL,  -- unix micros; errors at or before this are handled
+          note       TEXT,
+          acked_by   TEXT,
+          created_utc INTEGER NOT NULL,
+          PRIMARY KEY (app_id, scope)
+        );
+        """,
     ];
 }
