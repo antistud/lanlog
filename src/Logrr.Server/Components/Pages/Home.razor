@@ -38,7 +38,6 @@ else
         @foreach (var app in _apps)
         {
             var s = _stats.GetValueOrDefault(app.Id);
-            var errors = (s?.CountByLevel.GetValueOrDefault("Error") ?? 0) + (s?.CountByLevel.GetValueOrDefault("Fatal") ?? 0);
             var unacked = s?.UnacknowledgedErrors ?? 0;
             <a class="tile @(unacked > 0 ? "alert" : "")" href="@($"/apps/{app.Id}/tail")">
                 <div class="flex between items-center">
@@ -58,12 +57,6 @@ else
                                     @onclick="() => Acknowledge(app.Id)"
                                     @onclick:preventDefault="true" @onclick:stopPropagation="true">✓ Ack</button>
                         </span>
-                    }
-                    else if (errors > 0)
-                    {
-                        <button class="btn ghost sm" title="@AckedTitle(app.Id) — click to undo"
-                                @onclick="() => Unacknowledge(app.Id)"
-                                @onclick:preventDefault="true" @onclick:stopPropagation="true">✓ acknowledged</button>
                     }
                 </div>
 
@@ -114,7 +107,6 @@ else
 @code {
     private IReadOnlyList<Logrr.Storage.Control.AppRecord> _apps = [];
     private readonly Dictionary<string, Logrr.Contracts.AppStatsDto> _stats = new();
-    private readonly Dictionary<string, Logrr.Storage.Control.Ack?> _latestAck = new();
     private System.Threading.Timer? _timer;
 
     private bool _showCreate;
@@ -151,7 +143,6 @@ else
         foreach (var app in _apps)
         {
             _stats[app.Id] = Stats.GetStats(app.Id, DateTimeOffset.UtcNow);
-            _latestAck[app.Id] = Acks.ListByApp(app.Id).FirstOrDefault(); // newest first
         }
     }
 
@@ -169,21 +160,6 @@ else
         Load();
     }
 
-    private void Unacknowledge(string appId)
-    {
-        Acks.ClearAll(appId);
-        Load();
-    }
-
-    private string AckedTitle(string appId)
-    {
-        if (_latestAck.GetValueOrDefault(appId) is not { } ack)
-        {
-            return "Acknowledged";
-        }
-        var who = ack.AckedBy is null ? "" : $" by {ack.AckedBy}";
-        return $"Acknowledged{who} at {ack.CreatedUtc.ToLocalTime():yyyy-MM-dd HH:mm}";
-    }
 
     private void CreateApp()
     {
