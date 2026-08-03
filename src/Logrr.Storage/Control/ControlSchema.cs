@@ -141,5 +141,15 @@ public static class ControlSchema
           PRIMARY KEY (app_id, scope)
         );
         """,
+
+        // v7 - Windows integrated sign-in (SPEC section 11): the Windows identity this account
+        // answers to, as the server reports it ('DOMAIN\user'). NULL for password-only accounts.
+        // The index is NOCASE because Windows account names are case-insensitive, and partial so
+        // the many NULL rows don't collide - two accounts must never claim the same identity.
+        """
+        ALTER TABLE users ADD COLUMN windows_account TEXT;
+        CREATE UNIQUE INDEX ux_users_windows_account
+          ON users(windows_account COLLATE NOCASE) WHERE windows_account IS NOT NULL;
+        """,
     ];
 }

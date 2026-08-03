@@ -1,6 +1,8 @@
 @page "/login"
 @layout Logrr.Server.Components.Layout.MainLayout
 @attribute [AllowAnonymous]
+@inject Logrr.Server.WindowsAuthOptions WindowsAuth
+@inject NavigationManager Nav
 
 <PageTitle>Sign in — Logrr</PageTitle>
 
@@ -18,6 +20,29 @@
                 <div class="badge danger w-full" style="justify-content:center; padding:var(--sp-2); margin-bottom:var(--sp-4)">
                     Invalid username or password
                 </div>
+            }
+
+            @if (WindowsStatus == "unmapped")
+            {
+                <div class="badge warn w-full" style="justify-content:center; padding:var(--sp-2); margin-bottom:var(--sp-4); text-align:center">
+                    @(string.IsNullOrEmpty(Account) ? "That Windows account" : Account) is not linked to a Logrr account.
+                    An admin can link it under Admin → Users.
+                </div>
+            }
+            else if (WindowsStatus == "anonymous")
+            {
+                <div class="badge warn w-full" style="justify-content:center; padding:var(--sp-2); margin-bottom:var(--sp-4); text-align:center">
+                    Windows sign-in did not identify you. Sign in below.
+                </div>
+            }
+
+            @if (WindowsAuth.Enabled)
+            {
+                <a class="btn w-full" style="justify-content:center; margin-bottom:var(--sp-4)"
+                   href="@($"/auth/windows?returnUrl={Uri.EscapeDataString(LocalReturnUrl)}")">
+                    Sign in with Windows
+                </a>
+                <div class="muted-2" style="text-align:center; font-size:var(--fs-xs); margin-bottom:var(--sp-3)">or use a Logrr account</div>
             }
 
             <form method="post" action="/auth/login">
@@ -42,5 +67,25 @@
 @code {
     [SupplyParameterFromQuery] public string? ReturnUrl { get; set; }
     [SupplyParameterFromQuery(Name = "error")] public int? ErrorFlag { get; set; }
+
+    /// <summary>Set by anything that must show the form: sign-out, and every Windows failure path.</summary>
+    [SupplyParameterFromQuery(Name = "local")] public int? Local { get; set; }
+    [SupplyParameterFromQuery(Name = "windows")] public string? WindowsStatus { get; set; }
+    [SupplyParameterFromQuery(Name = "account")] public string? Account { get; set; }
+
     private bool Error => ErrorFlag == 1;
+
+    private string LocalReturnUrl =>
+        !string.IsNullOrEmpty(ReturnUrl) && ReturnUrl.StartsWith('/') && !ReturnUrl.StartsWith("//") ? ReturnUrl : "/";
+
+    protected override void OnInitialized()
+    {
+        // Hand the browser straight to the Windows handshake so a domain user never sees this page.
+        // Suppressed whenever the form was asked for explicitly (?local=1) - which is where every
+        // Windows failure and an explicit sign-out land, so this can never become a loop.
+        if (WindowsAuth.Enabled && WindowsAuth.AutoSignIn && Local != 1 && WindowsStatus is null)
+        {
+            Nav.NavigateTo($"/auth/windows?returnUrl={Uri.EscapeDataString(LocalReturnUrl)}", forceLoad: true);
+        }
+    }
 }

@@ -8,6 +8,7 @@
 @inject Logrr.Notify.DeliveryStore Deliveries
 @inject Logrr.Storage.StoragePaths Paths
 @inject Logrr.Storage.Control.UserStore Users
+@inject Logrr.Server.WindowsAuthOptions WindowsAuth
 @inject Logrr.Server.Ingest.IngestCorsPolicy Cors
 @inject Microsoft.Extensions.Options.IOptions<Logrr.Server.ServerOptions> Options
 
@@ -28,10 +29,19 @@
 </div>
 
 <div class="card">
-    <div class="card-head"><h3>Users</h3><button class="btn primary sm" @onclick="() => _showUser = true">＋ New user</button></div>
+    <div class="card-head">
+        <div>
+            <h3>Users</h3>
+            @if (!WindowsAuth.Enabled)
+            {
+                <div class="meta">Windows sign-in is off. Links set here take effect once <code>Logrr:Auth:Windows:Enabled</code> is true.</div>
+            }
+        </div>
+        <button class="btn primary sm" @onclick="() => _showUser = true">＋ New user</button>
+    </div>
     <div class="table-wrap" style="border:none">
         <table class="data">
-            <thead><tr><th>Username</th><th>Role</th><th>Created</th><th></th></tr></thead>
+            <thead><tr><th>Username</th><th>Role</th><th>Windows sign-in</th><th>Created</th><th></th></tr></thead>
             <tbody>
                 @foreach (var u in _users)
                 {
@@ -41,8 +51,17 @@
                             @if (u.Role == Logrr.Storage.Control.UserRole.Admin) { <span class="badge accent">Admin</span> }
                             else { <span class="badge">User</span> }
                         </td>
+                        <td>
+                            @if (string.IsNullOrEmpty(u.WindowsAccount)) { <span class="meta">—</span> }
+                            else
+                            {
+                                <code class="meta">@u.WindowsAccount</code>
+                                @if (u.PasswordHash is null) { <span class="badge" style="margin-left:6px" title="No password set — this account can only sign in with Windows">Windows only</span> }
+                            }
+                        </td>
                         <td class="meta">@u.CreatedUtc.ToLocalTime().ToString("yyyy-MM-dd")</td>
                         <td class="text-right nowrap">
+                            <button class="btn ghost sm" @onclick="() => OpenWindows(u)">Windows account</button>
                             <button class="btn ghost sm" @onclick="() => OpenReset(u)">Reset password</button>
                             @if (u.Username != _currentUser)
                             {
@@ -117,7 +136,16 @@
 <Modal @bind-Open="_showUser" Title="New user">
     <ChildContent>
         <div class="field"><label>Username</label><input class="input" @bind="_uName" /></div>
-        <div class="field"><label>Password</label><input class="input" type="password" @bind="_uPass" /></div>
+        <div class="field">
+            <label>Password</label>
+            <input class="input" type="password" @bind="_uPass" />
+            <span class="hint">Optional if a Windows account is set — leave blank for Windows-only sign-in.</span>
+        </div>
+        <div class="field">
+            <label>Windows account</label>
+            <input class="input" placeholder="CONTOSO\jrhoades" @bind="_uWin" />
+            <span class="hint">Signs in automatically as this user. Domain or machine qualified, e.g. <code>CONTOSO\jrhoades</code>.</span>
+        </div>
         <div class="field">
             <label>Role</label>
             <select class="input" @bind="_uRole">
@@ -130,6 +158,24 @@
     <Footer>
         <button class="btn ghost" @onclick="() => _showUser = false">Cancel</button>
         <button class="btn primary" @onclick="CreateUser">Create user</button>
+    </Footer>
+</Modal>
+
+<Modal @bind-Open="_showWin" Title="@($"Windows account — {_winName}")">
+    <ChildContent>
+        <div class="field">
+            <label>Windows account</label>
+            <input class="input" placeholder="CONTOSO\jrhoades" @bind="_winAccount" />
+            <span class="hint">
+                Exactly as Windows reports it, e.g. <code>CONTOSO\jrhoades</code> or <code>SERVER01\jrhoades</code>.
+                Case does not matter. Clear the field to unlink.
+            </span>
+        </div>
+        @if (_winErr is not null) { <div class="badge danger">@_winErr</div> }
+    </ChildContent>
+    <Footer>
+        <button class="btn ghost" @onclick="() => _showWin = false">Cancel</button>
+        <button class="btn primary" @onclick="SaveWindows">Save</button>
     </Footer>
 </Modal>
 
@@ -155,8 +201,12 @@
     private string _log = "", _logName = "";
 
     private bool _showUser;
-    private string _uName = "", _uPass = "", _uRole = "User";
+    private string _uName = "", _uPass = "", _uRole = "User", _uWin = "";
     private string? _uErr;
+
+    private bool _showWin;
+    private string _winId = "", _winName = "", _winAccount = "";
+    private string? _winErr;
 
     private bool _showReset;
     private string _resetId = "", _resetName = "", _resetPass = "";
@@ -267,24 +317,68 @@
     private void CreateUser()
     {
         _uErr = null;
-        if (string.IsNullOrWhiteSpace(_uName) || string.IsNullOrWhiteSpace(_uPass)) { _uErr = "username and password required"; return; }
+        var win = _uWin.Trim();
+        if (string.IsNullOrWhiteSpace(_uName)) { _uErr = "username required"; return; }
+        if (string.IsNullOrWhiteSpace(_uPass) && win.Length == 0) { _uErr = "set a password, a Windows account, or both"; return; }
         if (Users.GetByUsername(_uName) is not null) { _uErr = "username already exists"; return; }
+        if (win.Length > 0)
+        {
+            if (WindowsAccountError(win) is { } err) { _uErr = err; return; }
+            if (Users.GetByWindowsAccount(win) is not null) { _uErr = "another user is already linked to that Windows account"; return; }
+        }
 
-        var (hash, salt) = Logrr.Server.Security.PasswordHasher.Create(_uPass);
+        // No password means Windows-only: the sign-in form rejects an account with no hash, so the
+        // Windows link is the sole way in.
+        byte[]? hash = null, salt = null;
+        if (!string.IsNullOrWhiteSpace(_uPass))
+        {
+            (hash, salt) = Logrr.Server.Security.PasswordHasher.Create(_uPass);
+        }
+
         Users.Create(new Logrr.Storage.Control.UserRecord
         {
             Id = Guid.NewGuid().ToString("N"),
             Username = _uName,
             PasswordHash = hash,
             PasswordSalt = salt,
+            WindowsAccount = win.Length == 0 ? null : win,
             Role = _uRole == "Admin" ? Logrr.Storage.Control.UserRole.Admin : Logrr.Storage.Control.UserRole.User,
             MustChangePassword = false,
             CreatedUtc = DateTimeOffset.UtcNow,
         });
         _showUser = false;
-        _uName = ""; _uPass = "";
+        _uName = ""; _uPass = ""; _uWin = "";
         Refresh();
     }
+
+    private void OpenWindows(Logrr.Storage.Control.UserRecord u)
+    {
+        _winId = u.Id; _winName = u.Username; _winAccount = u.WindowsAccount ?? ""; _winErr = null;
+        _showWin = true;
+    }
+
+    private void SaveWindows()
+    {
+        _winErr = null;
+        var account = _winAccount.Trim();
+        if (account.Length > 0 && WindowsAccountError(account) is { } err) { _winErr = err; return; }
+        if (!Users.SetWindowsAccount(_winId, account.Length == 0 ? null : account))
+        {
+            _winErr = "another user is already linked to that Windows account";
+            return;
+        }
+        _showWin = false;
+        Refresh();
+    }
+
+    /// <summary>
+    /// A bare "jrhoades" never matches what the server reports, so the link would silently never
+    /// fire. Catch that here rather than at a failed sign-in.
+    /// </summary>
+    private static string? WindowsAccountError(string account) =>
+        account.Contains('\\') || account.Contains('@')
+            ? null
+            : "qualify the account, e.g. CONTOSO\\jrhoades or jrhoades@contoso.com";
 
     private void OpenReset(Logrr.Storage.Control.UserRecord u)
     {

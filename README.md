@@ -51,6 +51,10 @@ password to `FIRST-RUN-CREDENTIALS.txt` **in the data directory** — the path i
 `LOGRR_DATA_PATH` above, or `C:\Logrr` (Windows) / `./data` (elsewhere) if you
 don't set it. Sign in as `admin` with that password.
 
+To stop typing passwords, link accounts to Windows identities and turn on
+`Logrr:Auth:Windows:Enabled` — domain users are then signed in automatically. Setup and the
+`/login?local=1` escape hatch are in [`docs/SETUP.md`](docs/SETUP.md) §8.
+
 Send a log line (Seq-compatible CLEF) once you've created an app + token in the UI:
 
 ```bash

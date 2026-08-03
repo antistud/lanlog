@@ -16,11 +16,19 @@
     <PackageVersion Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.12" />
     <PackageVersion Include="System.IO.Hashing" Version="10.0.0" />
     <PackageVersion Include="MailKit" Version="4.13.0" />
-    <!-- Logrr.Client (netstandard2.0) dependencies. -->
-    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0" />
+    <!-- Logrr.Client (netstandard2.0) dependencies.
+         10.0.10 rather than 10.0.0 only because transitive pinning is enabled and the Negotiate
+         package (see above) pulls Caching.Memory 10.0.10, which floors this at the same patch. -->
+    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.10" />
     <!-- clients/vb sample only (LoggerFactory.Create). Not a Logrr.Client dependency. -->
     <PackageVersion Include="Microsoft.Extensions.Logging" Version="10.0.0" />
     <PackageVersion Include="System.Text.Json" Version="10.0.0" />
+    <!-- Windows integrated sign-in (SPEC §11). Under IIS in-process this handler defers to the
+         server's own Windows authentication rather than doing the handshake itself, so the same
+         registration covers both IIS and standalone Kestrel.
+         Held at 10.0.10, not 10.0.0: the .0 release carries GHSA-2p3q-h3hg-jcqq and
+         GHSA-8prm-248r-h957 (NU1903), and this repo builds warning-free. -->
+    <PackageVersion Include="Microsoft.AspNetCore.Authentication.Negotiate" Version="10.0.10" />
     <PackageVersion Include="Serilog.AspNetCore" Version="9.0.0" />
     <PackageVersion Include="Serilog.Sinks.File" Version="6.0.0" />
   </ItemGroup>

@@ -192,8 +192,11 @@ CREATE TABLE tokens (
 CREATE TABLE users (
   id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE,
   password_hash BLOB, password_salt BLOB, role INTEGER NOT NULL,
-  must_change_password INTEGER NOT NULL, app_access TEXT, created_utc INTEGER NOT NULL
+  must_change_password INTEGER NOT NULL, app_access TEXT, created_utc INTEGER NOT NULL,
+  windows_account TEXT                  -- §11; NULL = password-only account
 );
+CREATE UNIQUE INDEX ux_users_windows_account
+  ON users(windows_account COLLATE NOCASE) WHERE windows_account IS NOT NULL;
 CREATE TABLE destinations (...);        -- §10.1
 CREATE TABLE rules (...);               -- §10.3
 CREATE TABLE rule_occurrences (...);    -- §10.4
@@ -781,6 +784,24 @@ propagates within one TTL; document that.
 600k iterations. Roles `Admin` and `User`; `User` gets read access to an explicit app
 list and may create tickets but not edit rules or destinations.
 
+**Windows integrated sign-in.** Optional (`Logrr:Auth:Windows:Enabled`, off by default), and
+deliberately *not* a second session type — it is one extra sign-in route. `/auth/windows`
+challenges the Negotiate scheme, matches the resulting identity against `users.windows_account`
+and then issues the same cookie the password form does, so the Blazor circuit, the SignalR hub,
+roles and per-app access are all untouched by it. The `Microsoft.AspNetCore.Authentication.Negotiate`
+handler covers both hosts: under IIS in-process it defers to the module's own Windows
+authentication, under Kestrel it performs the handshake itself.
+
+Mapping is explicit — an admin links each account to a Windows identity. An unrecognised identity
+is refused rather than provisioned, and an account with a `windows_account` but no password hash
+is Windows-only, since `/auth/login` rejects any account without a hash. Two accounts cannot claim
+one identity (unique, case-insensitive, partial index).
+
+The auto-redirect that makes sign-in invisible needs exactly one escape hatch to be safe:
+`/login?local=1` always renders the password form and never redirects. Every Windows failure
+path and sign-out land there, so a bad mapping or a misconfigured host can never lock out
+every account.
+
 Data Protection keys persisted to `{data}\keys` so cookies and encrypted destination
 secrets survive an app pool recycle and a redeploy. **If that folder is lost, destination
 secrets are unrecoverable** — call this out in the backup doc.
@@ -813,6 +834,7 @@ misconfigured IdP can't lock you out of your own log server.
       "DispatcherConcurrency": 4, "RuleEvaluationMaxAgeMinutes": 15,
       "GlobalMaxDeliveriesPerHour": 500, "DeadLetterRetentionDays": 30
     },
+    "Auth": { "Windows": { "Enabled": false, "AutoSignIn": true } },
     "Defaults": { "RetentionDays": 14, "MaxSizeMb": 2048 },
     "SelfLog": { "MinimumLevel": "Information", "RetainedFileCount": 7 }
   }

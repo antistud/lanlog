@@ -13,6 +13,7 @@ using Logrr.Server.Security;
 using Logrr.Storage;
 using Logrr.Storage.Control;
 using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.Authentication.Negotiate;
 using Microsoft.AspNetCore.Cors.Infrastructure;
 using Microsoft.AspNetCore.DataProtection;
 using Serilog;
@@ -181,12 +182,32 @@ builder.Services.AddSingleton<IngestService>();
 // ---- Auth ----
 builder.Services.AddSingleton<TokenAuthenticator>();
 builder.Services.AddSingleton<FirstRunBootstrapper>();
-builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
+
+var windowsAuth = new WindowsAuthOptions
+{
+    Enabled = cfgRoot.GetValue("Auth:Windows:Enabled", false),
+    AutoSignIn = cfgRoot.GetValue("Auth:Windows:AutoSignIn", true),
+};
+builder.Services.AddSingleton(windowsAuth);
+
+// The cookie stays the one and only session mechanism. Windows auth is a *sign-in route*, not a
+// second way to be authenticated: /auth/windows challenges Negotiate, maps the Windows identity
+// onto a Logrr account and issues the same cookie. Everything downstream - the Blazor circuit,
+// the SignalR hub, roles, per-app access - is untouched by this, which is the whole point.
+var authBuilder = builder.Services
+    .AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
     .AddCookie(o =>
     {
         o.LoginPath = "/login";
         o.AccessDeniedPath = "/login";
     });
+if (windowsAuth.Enabled)
+{
+    // Under IIS in-process the module has already done the handshake, and this handler forwards
+    // to the server's "Windows" scheme instead of running its own - so no extra config per host.
+    authBuilder.AddNegotiate();
+}
+
 builder.Services.AddAuthorizationBuilder()
     .AddPolicy("Admin", p => p.RequireRole("Admin"));
 

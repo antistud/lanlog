@@ -10,9 +10,9 @@ public sealed class UserStore(ControlDatabase db)
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            INSERT INTO users (id, username, password_hash, password_salt, role,
+            INSERT INTO users (id, username, password_hash, password_salt, windows_account, role,
                                must_change_password, app_access, created_utc)
-            VALUES ($id, $username, $hash, $salt, $role, $must, $access, $created);
+            VALUES ($id, $username, $hash, $salt, $win, $role, $must, $access, $created);
             """;
         Bind(cmd, user);
         cmd.ExecuteNonQuery();
@@ -24,6 +24,25 @@ public sealed class UserStore(ControlDatabase db)
         using var cmd = conn.CreateCommand();
         cmd.CommandText = "SELECT * FROM users WHERE username = $u;";
         cmd.Add("$u", username);
+        using var reader = cmd.ExecuteReader();
+        return reader.Read() ? Map(reader) : null;
+    }
+
+    /// <summary>
+    /// The account mapped to a Windows identity, or null if none is. Matching is case-insensitive
+    /// because Windows account names are; the caller passes the name exactly as the server
+    /// reported it (<c>DOMAIN\user</c>).
+    /// </summary>
+    public UserRecord? GetByWindowsAccount(string windowsAccount)
+    {
+        if (string.IsNullOrWhiteSpace(windowsAccount))
+        {
+            return null;
+        }
+        using var conn = db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT * FROM users WHERE windows_account = $w COLLATE NOCASE;";
+        cmd.Add("$w", windowsAccount.Trim());
         using var reader = cmd.ExecuteReader();
         return reader.Read() ? Map(reader) : null;
     }
@@ -75,12 +94,34 @@ public sealed class UserStore(ControlDatabase db)
         cmd.ExecuteNonQuery();
     }
 
+    /// <summary>
+    /// Map (or, with null, unmap) the Windows identity this account signs in as. Returns false if
+    /// another account already claims it - the unique index would otherwise throw.
+    /// </summary>
+    public bool SetWindowsAccount(string id, string? windowsAccount)
+    {
+        var normalized = string.IsNullOrWhiteSpace(windowsAccount) ? null : windowsAccount.Trim();
+        if (normalized is not null && GetByWindowsAccount(normalized) is { } other && other.Id != id)
+        {
+            return false;
+        }
+
+        using var conn = db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "UPDATE users SET windows_account = $w WHERE id = $id;";
+        cmd.Add("$w", (object?)normalized);
+        cmd.Add("$id", id);
+        cmd.ExecuteNonQuery();
+        return true;
+    }
+
     private static void Bind(SqliteCommand cmd, UserRecord u)
     {
         cmd.Add("$id", u.Id);
         cmd.Add("$username", u.Username);
         cmd.Add("$hash", (object?)u.PasswordHash);
         cmd.Add("$salt", (object?)u.PasswordSalt);
+        cmd.Add("$win", (object?)(string.IsNullOrWhiteSpace(u.WindowsAccount) ? null : u.WindowsAccount.Trim()));
         cmd.Add("$role", (int)u.Role);
         cmd.Add("$must", u.MustChangePassword ? 1 : 0);
         cmd.Add("$access", u.AppAccess is null ? null : System.Text.Json.JsonSerializer.Serialize(u.AppAccess));
@@ -93,6 +134,7 @@ public sealed class UserStore(ControlDatabase db)
         Username = r.GetString(r.GetOrdinal("username")),
         PasswordHash = r.IsDBNull(r.GetOrdinal("password_hash")) ? null : (byte[])r["password_hash"],
         PasswordSalt = r.IsDBNull(r.GetOrdinal("password_salt")) ? null : (byte[])r["password_salt"],
+        WindowsAccount = r.IsDBNull(r.GetOrdinal("windows_account")) ? null : r.GetString(r.GetOrdinal("windows_account")),
         Role = (UserRole)r.GetInt32(r.GetOrdinal("role")),
         MustChangePassword = r.GetInt32(r.GetOrdinal("must_change_password")) != 0,
         AppAccess = r.IsDBNull(r.GetOrdinal("app_access"))

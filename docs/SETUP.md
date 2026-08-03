@@ -99,13 +99,69 @@ Log.Logger = new LoggerConfiguration()
 
 (The endpoint is Seq-compatible — no Logrr-specific client package to install.)
 
-## 8. Backup
+## 8. Windows integrated sign-in (optional)
+
+Signs domain users in automatically, so nobody types a Logrr password. It is a *sign-in
+route*, not a second session type: the Windows identity is matched to an existing Logrr
+account and the normal session cookie is issued, so roles and per-app access are unchanged.
+
+**Only accounts you have linked can sign in this way.** An unrecognised Windows identity is
+refused and sent to the password form — Logrr never provisions an account from a domain
+identity on its own.
+
+**a. Enable it in IIS.** On the site, enable **Windows Authentication** *and* leave
+**Anonymous Authentication** enabled. Both are required: anonymous keeps token ingest, the
+health endpoint and the password form reachable, and Windows answers the app's challenge on
+`/auth/windows`. Windows Authentication is not installed by default — add the
+*Windows Authentication* role feature first, or the option will not appear.
+
+The `system.webServer/security/authentication` section is locked by IIS, so this **cannot**
+be set from `web.config` (same 500.19 trap as `<webSocket>` in §3). Set it on the site:
+
+```
+%windir%\system32\inetsrv\appcmd set config "Logrr" -section:system.webServer/security/authentication/windowsAuthentication /enabled:true /commit:apphost
+%windir%\system32\inetsrv\appcmd set config "Logrr" -section:system.webServer/security/authentication/anonymousAuthentication /enabled:true /commit:apphost
+```
+
+**b. Turn it on in Logrr** (`appsettings.json`):
+
+```json
+"Logrr": {
+  "Auth": { "Windows": { "Enabled": true, "AutoSignIn": true } }
+}
+```
+
+`AutoSignIn` sends anonymous visitors straight through the handshake. Set it to `false` to
+show the sign-in page with a *Sign in with Windows* button instead.
+
+**c. Link each account.** Admin → Users → **Windows account**, entered exactly as Windows
+reports it — `CONTOSO\jrhoades`. Case does not matter. Leaving a new user's password blank
+makes the account Windows-only, which is the point: there is no password to leak or rotate.
+
+### If it goes wrong
+
+`/login?local=1` **always** shows the password form and never auto-redirects — that URL is
+the way back in when Windows sign-in misbehaves, so a mistyped account name cannot lock you
+out. Signing out lands there too, otherwise "sign out" would immediately sign you back in.
+
+- *"…is not linked to a Logrr account"* — the account name does not match. `logrr-internal*.log`
+  records the exact string the server saw; copy it into the Windows account field verbatim.
+- *A browser credential prompt, then a blank 401* — Windows Authentication is not enabled on
+  the site (step a). The browser has nothing to answer the challenge with.
+- *`The Negotiate Authentication handler cannot be used on a server that directly supports
+  Windows Authentication`* — `Enabled` is true but IIS Windows Authentication is off. Same
+  fix: step a.
+- *Prompted for credentials instead of being signed in silently* — the site is not in the
+  browser's Local intranet zone. Use the server's short hostname, not an IP or an external
+  FQDN, or add the site to that zone.
+
+## 9. Backup
 
 Copy any partition file that isn't today's, plus `control.db` and the **`keys\`** folder.
 **If `keys\` is lost, destination webhook secrets are unrecoverable** (SPEC §11, §13).
 For the live partition, use `sqlite3 .backup`.
 
-## 9. Upgrade
+## 10. Upgrade
 
 Publish to a new `logrr_{build}` folder, repoint the site's physical path, recycle, and
 delete the previous folder on the next deploy. The data directory is untouched.

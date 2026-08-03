@@ -48,6 +48,14 @@ public sealed record UserRecord
     public required string Username { get; init; }
     public byte[]? PasswordHash { get; init; }
     public byte[]? PasswordSalt { get; init; }
+
+    /// <summary>
+    /// Windows identity this account signs in as, e.g. <c>CONTOSO\jrhoades</c>. <c>null</c> means
+    /// the account is password-only. A user with this set and no password hash can <em>only</em>
+    /// sign in via Windows integrated auth.
+    /// </summary>
+    public string? WindowsAccount { get; init; }
+
     public UserRole Role { get; init; }
     public bool MustChangePassword { get; init; }
     public IReadOnlyList<string>? AppAccess { get; init; }
