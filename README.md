@@ -79,6 +79,31 @@ already use `Serilog.Sinks.Seq`, you can point it at Logrr instead and skip the 
 
 Build the package with `dotnet pack src/Logrr.Client -c Release`.
 
+## Collecting Windows event logs
+
+Logrr can pull the Application/System/Security logs from this box and any other Windows
+machine on the LAN — **without installing anything on them**. The server reads their event
+logs over RPC, so there is still no agent to deploy.
+
+```json
+"Logrr": {
+  "WindowsEvents": {
+    "Enabled": true,
+    "Sources": [
+      { "Machine": ".",     "AppId": "windows-logrr", "Channels": ["Application", "System"] },
+      { "Machine": "WEB01", "AppId": "windows-web01", "Channels": ["Application", "System"] }
+    ]
+  }
+}
+```
+
+Each machine's events land in their own app, grouped one event type per Windows event id, so
+notification rules and tickets work on them exactly as they do on application logs. Collection
+starts at the tail of each log and resumes from where it left off after a restart. The app
+pool needs an identity that can read the remote logs — setup and the permissions that catch
+people out are in [`docs/SETUP.md`](docs/SETUP.md) §9, design in
+[`docs/SPEC.md`](docs/SPEC.md) §6.4.
+
 **VB.NET:** worked, compiled examples live in [`clients/vb/`](clients/vb/README.md) —
 direct client, `Microsoft.Extensions.Logging`, ASP.NET Framework `Global.asax`, WinForms,
 and the VB-specific traps (message templates vs interpolation, root-namespace collisions,

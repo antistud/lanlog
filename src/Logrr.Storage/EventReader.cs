@@ -1,8 +1,9 @@
+using System.Data.Common;
 using System.Text;
 using System.Text.Json;
 using Logrr.Contracts;
 using Logrr.Core.Filters;
-using Microsoft.Data.Sqlite;
+using Logrr.Storage.Sql;
 
 namespace Logrr.Storage;
 
@@ -13,7 +14,7 @@ public sealed record EventQuery
     public DateTimeOffset? From { get; init; }
     public DateTimeOffset? To { get; init; }
     public LogLevel? MinLevel { get; init; }
-    public string? Text { get; init; }              // full-text (FTS5 MATCH)
+    public string? Text { get; init; }              // full-text search
     public string? Filter { get; init; }            // filter expression (SPEC §7.1)
     public string? Cursor { get; init; }
     public int Limit { get; init; } = 100;
@@ -50,6 +51,8 @@ public sealed class EventReader(PartitionManager partitions)
 {
     private const int MaxLimit = 1000;
     private const int MaxAggregatePartitions = 90;
+
+    private SqlDialect Dialect => partitions.Dialect;
 
     public EventQueryResponse Query(EventQuery query)
     {
@@ -95,7 +98,7 @@ public sealed class EventReader(PartitionManager partitions)
             }
             partitionsScanned++;
 
-            foreach (var (_, dto) in ReadPartition(conn, day, query, filter, idUpperBound, need))
+            foreach (var (_, dto) in ReadPartition(conn, query.AppId, day, query, filter, idUpperBound, need))
             {
                 events.Add(dto);
             }
@@ -129,8 +132,8 @@ public sealed class EventReader(PartitionManager partitions)
     /// Append the shared WHERE predicate (time, level, full-text, filter expression) to a command,
     /// so the results table, histogram, and facets all filter identically.
     /// </summary>
-    private static string BuildWhere(
-        SqliteCommand cmd, EventQuery query, FilterExpression? filter, long? idUpperBound)
+    private string BuildWhere(
+        DbCommand cmd, string table, EventQuery query, FilterExpression? filter, long? idUpperBound)
     {
         var where = new StringBuilder("1=1");
 
@@ -152,12 +155,11 @@ public sealed class EventReader(PartitionManager partitions)
         }
         if (!string.IsNullOrWhiteSpace(query.Text))
         {
-            where.Append(" AND id IN (SELECT rowid FROM events_fts WHERE events_fts MATCH ")
-                 .Append(cmd.AddParam(query.Text)).Append(')');
+            where.Append(" AND ").Append(Dialect.TextSearchPredicate(cmd, table, query.Text));
         }
         if (filter is not null)
         {
-            var (sql, ps) = filter.ToSql();
+            var (sql, ps) = filter.ToSql(Dialect.FilterSql);
             // Re-map @pN parameter names so they don't collide with this command's params.
             var offset = cmd.Parameters.Count;
             for (var i = ps.Count - 1; i >= 0; i--)
@@ -174,33 +176,34 @@ public sealed class EventReader(PartitionManager partitions)
         return where.ToString();
     }
 
-    private static IEnumerable<(long Rowid, LogEventDto Dto)> ReadPartition(
-        SqliteConnection conn, DateOnly day, EventQuery query, FilterExpression? filter,
+    private IEnumerable<(long Rowid, LogEventDto Dto)> ReadPartition(
+        DbConnection conn, string appId, DateOnly day, EventQuery query, FilterExpression? filter,
         long? idUpperBound, int limit)
     {
+        var table = partitions.Table(appId, day);
         using var cmd = conn.CreateCommand();
-        var where = BuildWhere(cmd, query, filter, idUpperBound);
+        var where = BuildWhere(cmd, table, query, filter, idUpperBound);
 
         cmd.CommandText = $"""
             SELECT id, ts, level, template, message, exception, event_type,
                    trace_id, span_id, source, machine, properties
-            FROM events
+            FROM {table}
             WHERE {where}
             ORDER BY id DESC
-            LIMIT {limit};
+            {Dialect.LimitClause(limit)};
             """;
 
         using var reader = cmd.ExecuteReader();
         while (reader.Read())
         {
-            var rowid = reader.GetInt64(0);
+            var rowid = Convert.ToInt64(reader.GetValue(0));
             yield return (rowid, MapDto(reader, day, rowid));
         }
     }
 
-    private static LogEventDto MapDto(SqliteDataReader r, DateOnly day, long rowid)
+    private static LogEventDto MapDto(DbDataReader r, DateOnly day, long rowid)
     {
-        var micros = r.GetInt64(1);
+        var micros = Convert.ToInt64(r.GetValue(1));
         JsonElement? props = null;
         if (!r.IsDBNull(11))
         {
@@ -215,11 +218,11 @@ public sealed class EventReader(PartitionManager partitions)
         {
             Id = EventId.Format(day, rowid),
             Timestamp = DateTimeOffset.UnixEpoch.AddTicks(micros * 10),
-            Level = (LogLevel)r.GetInt32(2),
+            Level = (LogLevel)Convert.ToInt32(r.GetValue(2)),
             Template = r.IsDBNull(3) ? null : r.GetString(3),
             Message = r.GetString(4),
             Exception = r.IsDBNull(5) ? null : r.GetString(5),
-            EventType = r.IsDBNull(6) ? null : r.GetInt64(6),
+            EventType = r.IsDBNull(6) ? null : Convert.ToInt64(r.GetValue(6)),
             TraceId = r.IsDBNull(7) ? null : r.GetString(7),
             SpanId = r.IsDBNull(8) ? null : r.GetString(8),
             Source = r.IsDBNull(9) ? null : r.GetString(9),
@@ -248,8 +251,8 @@ public sealed class EventReader(PartitionManager partitions)
                 continue;
             }
             using var cmd = conn.CreateCommand();
-            cmd.CommandText = "SELECT COUNT(*) FROM events WHERE event_type = $t;";
-            cmd.Add("$t", eventType);
+            cmd.CommandText = $"SELECT COUNT(*) FROM {partitions.Table(appId, day)} WHERE event_type = @t;";
+            cmd.Add("@t", eventType);
             total += Convert.ToInt64(cmd.ExecuteScalar());
         }
         return total;
@@ -298,19 +301,21 @@ public sealed class EventReader(PartitionManager partitions)
             }
             scanned++;
 
+            var table = partitions.Table(query.AppId, day);
             using var cmd = conn.CreateCommand();
-            var where = BuildWhere(cmd, bounded, filter, null);
+            var where = BuildWhere(cmd, table, bounded, filter, null);
             var pFrom = cmd.AddParam(fromMicros);
             var pBucket = cmd.AddParam(bucketMicros);
+            var bucketExpr = Dialect.CastToLong($"(ts - {pFrom}) / {pBucket}");
             cmd.CommandText =
-                $"SELECT CAST((ts - {pFrom}) / {pBucket} AS INTEGER) AS b, level, COUNT(*) " +
-                $"FROM events WHERE {where} GROUP BY b, level;";
+                $"SELECT {bucketExpr} AS b, level, COUNT(*) " +
+                $"FROM {table} WHERE {where} GROUP BY {bucketExpr}, level;";
             using var reader = cmd.ExecuteReader();
             while (reader.Read())
             {
-                var b = (int)Math.Clamp(reader.GetInt64(0), 0, buckets - 1);
-                var level = (LogLevel)reader.GetInt32(1);
-                var count = reader.GetInt64(2);
+                var b = (int)Math.Clamp(Convert.ToInt64(reader.GetValue(0)), 0, buckets - 1);
+                var level = (LogLevel)Convert.ToInt32(reader.GetValue(1));
+                var count = Convert.ToInt64(reader.GetValue(2));
                 tallies[b][level] = tallies[b].GetValueOrDefault(level) + count;
             }
         }
@@ -347,26 +352,28 @@ public sealed class EventReader(PartitionManager partitions)
             }
             scanned++;
 
+            var table = partitions.Table(query.AppId, day);
             using (var cmd = conn.CreateCommand())
             {
-                var where = BuildWhere(cmd, query, filter, null);
-                cmd.CommandText = $"SELECT level, COUNT(*) FROM events WHERE {where} GROUP BY level;";
+                var where = BuildWhere(cmd, table, query, filter, null);
+                cmd.CommandText = $"SELECT level, COUNT(*) FROM {table} WHERE {where} GROUP BY level;";
                 using var r = cmd.ExecuteReader();
                 while (r.Read())
                 {
-                    levels[(LogLevel)r.GetInt32(0)] = levels.GetValueOrDefault((LogLevel)r.GetInt32(0)) + r.GetInt64(1);
+                    var level = (LogLevel)Convert.ToInt32(r.GetValue(0));
+                    levels[level] = levels.GetValueOrDefault(level) + Convert.ToInt64(r.GetValue(1));
                 }
             }
             using (var cmd = conn.CreateCommand())
             {
-                var where = BuildWhere(cmd, query, filter, null);
+                var where = BuildWhere(cmd, table, query, filter, null);
                 cmd.CommandText =
-                    $"SELECT source, COUNT(*) FROM events WHERE {where} AND source IS NOT NULL GROUP BY source;";
+                    $"SELECT source, COUNT(*) FROM {table} WHERE {where} AND source IS NOT NULL GROUP BY source;";
                 using var r = cmd.ExecuteReader();
                 while (r.Read())
                 {
                     var src = r.GetString(0);
-                    sources[src] = sources.GetValueOrDefault(src) + r.GetInt64(1);
+                    sources[src] = sources.GetValueOrDefault(src) + Convert.ToInt64(r.GetValue(1));
                 }
             }
         }
@@ -401,12 +408,12 @@ public sealed class EventReader(PartitionManager partitions)
             return null;
         }
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = """
+        cmd.CommandText = $"""
             SELECT id, ts, level, template, message, exception, event_type,
                    trace_id, span_id, source, machine, properties
-            FROM events WHERE id = $id;
+            FROM {partitions.Table(appId, day)} WHERE id = @id;
             """;
-        cmd.Add("$id", rowid);
+        cmd.Add("@id", rowid);
         using var reader = cmd.ExecuteReader();
         return reader.Read() ? MapDto(reader, day, rowid) : null;
     }

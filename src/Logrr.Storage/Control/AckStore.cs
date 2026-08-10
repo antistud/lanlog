@@ -1,4 +1,5 @@
 using System.Globalization;
+using Logrr.Storage.Sql;
 
 namespace Logrr.Storage.Control;
 
@@ -44,17 +45,17 @@ public sealed class AckStore(ControlDatabase db)
         using var cmd = conn.CreateCommand();
         cmd.CommandText =
             "SELECT app_id, scope, through_ts, note, acked_by, created_utc FROM acks " +
-            "WHERE app_id = $a ORDER BY created_utc DESC;";
-        cmd.Add("$a", appId);
+            "WHERE app_id = @a ORDER BY created_utc DESC;";
+        cmd.Add("@a", appId);
         using var reader = cmd.ExecuteReader();
         var list = new List<Ack>();
         while (reader.Read())
         {
             list.Add(new Ack(
-                reader.GetString(0), reader.GetString(1), reader.GetInt64(2),
+                reader.GetString(0), reader.GetString(1), Convert.ToInt64(reader.GetValue(2)),
                 reader.IsDBNull(3) ? null : reader.GetString(3),
                 reader.IsDBNull(4) ? null : reader.GetString(4),
-                DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(5))));
+                DateTimeOffset.FromUnixTimeMilliseconds(Convert.ToInt64(reader.GetValue(5)))));
         }
         return list;
     }
@@ -89,19 +90,34 @@ public sealed class AckStore(ControlDatabase db)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = """
-            INSERT INTO acks (app_id, scope, through_ts, note, acked_by, created_utc)
-            VALUES ($a, $s, $t, $n, $by, $c)
-            ON CONFLICT (app_id, scope) DO UPDATE SET
-              through_ts = MAX(acks.through_ts, excluded.through_ts),
-              note = excluded.note, acked_by = excluded.acked_by, created_utc = excluded.created_utc;
-            """;
-        cmd.Add("$a", ack.AppId);
-        cmd.Add("$s", ack.Scope);
-        cmd.Add("$t", ack.ThroughTs);
-        cmd.Add("$n", ack.Note);
-        cmd.Add("$by", ack.AckedBy);
-        cmd.Add("$c", ack.CreatedUtc.ToUnixTimeMilliseconds());
+        cmd.CommandText = db.Dialect.IsSqlServer
+            // UPDLOCK/SERIALIZABLE on the probe is the standard SQL Server upsert: it takes the
+            // key range lock up front so a concurrent ack of the same scope waits rather than
+            // racing the INSERT into a primary-key violation.
+            ? """
+              BEGIN TRANSACTION;
+              UPDATE acks WITH (UPDLOCK, SERIALIZABLE)
+                SET through_ts = CASE WHEN through_ts > @t THEN through_ts ELSE @t END,
+                    note = @n, acked_by = @by, created_utc = @c
+                WHERE app_id = @a AND scope = @s;
+              IF @@ROWCOUNT = 0
+                INSERT INTO acks (app_id, scope, through_ts, note, acked_by, created_utc)
+                VALUES (@a, @s, @t, @n, @by, @c);
+              COMMIT;
+              """
+            : """
+              INSERT INTO acks (app_id, scope, through_ts, note, acked_by, created_utc)
+              VALUES (@a, @s, @t, @n, @by, @c)
+              ON CONFLICT (app_id, scope) DO UPDATE SET
+                through_ts = MAX(acks.through_ts, excluded.through_ts),
+                note = excluded.note, acked_by = excluded.acked_by, created_utc = excluded.created_utc;
+              """;
+        cmd.Add("@a", ack.AppId);
+        cmd.Add("@s", ack.Scope);
+        cmd.Add("@t", ack.ThroughTs);
+        cmd.Add("@n", ack.Note);
+        cmd.Add("@by", ack.AckedBy);
+        cmd.Add("@c", ack.CreatedUtc.ToUnixTimeMilliseconds());
         cmd.ExecuteNonQuery();
     }
 
@@ -110,9 +126,9 @@ public sealed class AckStore(ControlDatabase db)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "DELETE FROM acks WHERE app_id = $a AND scope = $s;";
-        cmd.Add("$a", appId);
-        cmd.Add("$s", scope);
+        cmd.CommandText = "DELETE FROM acks WHERE app_id = @a AND scope = @s;";
+        cmd.Add("@a", appId);
+        cmd.Add("@s", scope);
         cmd.ExecuteNonQuery();
     }
 
@@ -121,8 +137,8 @@ public sealed class AckStore(ControlDatabase db)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "DELETE FROM acks WHERE app_id = $a;";
-        cmd.Add("$a", appId);
+        cmd.CommandText = "DELETE FROM acks WHERE app_id = @a;";
+        cmd.Add("@a", appId);
         cmd.ExecuteNonQuery();
     }
 }

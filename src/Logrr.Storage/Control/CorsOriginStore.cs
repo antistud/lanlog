@@ -1,3 +1,5 @@
+using Logrr.Storage.Sql;
+
 namespace Logrr.Storage.Control;
 
 /// <summary>A browser origin permitted to post logs cross-origin (managed in the admin UI).</summary>
@@ -17,7 +19,7 @@ public sealed class CorsOriginStore(ControlDatabase db)
         {
             list.Add(new CorsOrigin(
                 reader.GetString(0),
-                DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(1))));
+                DateTimeOffset.FromUnixTimeMilliseconds(Convert.ToInt64(reader.GetValue(1)))));
         }
         return list;
     }
@@ -27,9 +29,15 @@ public sealed class CorsOriginStore(ControlDatabase db)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "INSERT OR IGNORE INTO cors_origins (origin, created_utc) VALUES ($o, $c);";
-        cmd.Add("$o", origin);
-        cmd.Add("$c", now.ToUnixTimeMilliseconds());
+        cmd.CommandText = db.Dialect.IsSqlServer
+            ? """
+              INSERT INTO cors_origins (origin, created_utc)
+              SELECT @o, @c
+              WHERE NOT EXISTS (SELECT 1 FROM cors_origins WITH (UPDLOCK, SERIALIZABLE) WHERE origin = @o);
+              """
+            : "INSERT OR IGNORE INTO cors_origins (origin, created_utc) VALUES (@o, @c);";
+        cmd.Add("@o", origin);
+        cmd.Add("@c", now.ToUnixTimeMilliseconds());
         return cmd.ExecuteNonQuery() > 0;
     }
 
@@ -37,8 +45,8 @@ public sealed class CorsOriginStore(ControlDatabase db)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "DELETE FROM cors_origins WHERE origin = $o;";
-        cmd.Add("$o", origin);
+        cmd.CommandText = "DELETE FROM cors_origins WHERE origin = @o;";
+        cmd.Add("@o", origin);
         cmd.ExecuteNonQuery();
     }
 

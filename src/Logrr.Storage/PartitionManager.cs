@@ -1,4 +1,5 @@
-using Microsoft.Data.Sqlite;
+using System.Data.Common;
+using Logrr.Storage.Sql;
 
 namespace Logrr.Storage;
 
@@ -6,16 +7,21 @@ namespace Logrr.Storage;
 /// Opens and caches one writer <see cref="EventPartition"/> per (app, UTC day), and hands
 /// out read-only connections for queries (SPEC §4.1, §4.2). Thread-safe.
 /// </summary>
-public sealed class PartitionManager(StoragePaths paths) : IDisposable
+public sealed class PartitionManager(SqlDialect dialect) : IDisposable
 {
     private readonly Dictionary<(string App, DateOnly Day), EventPartition> _writers = new();
     private readonly Lock _gate = new();
 
-    public StoragePaths Paths { get; } = paths;
+    /// <summary>Convenience for the default file-backed layout (and for tests).</summary>
+    public PartitionManager(StoragePaths paths) : this(new SqliteDialect(paths))
+    {
+    }
+
+    public SqlDialect Dialect { get; } = dialect;
 
     /// <summary>
     /// Get (opening if necessary) the writer partition for an app-day. The DDL — including
-    /// expression indexes for the app's indexed properties — is applied at creation.
+    /// an index per indexed property from the app's config snapshot — is applied at creation.
     /// </summary>
     public EventPartition GetWriter(string appId, DateOnly day, IReadOnlyList<string> indexedProperties)
     {
@@ -27,39 +33,25 @@ public sealed class PartitionManager(StoragePaths paths) : IDisposable
                 return existing;
             }
 
-            Paths.EnsureAppDirectory(appId);
-            var ddl = PartitionSchema.BuildDdl(indexedProperties);
-            var partition = new EventPartition(appId, day, Paths.PartitionPath(appId, day), ddl);
+            var partition = new EventPartition(Dialect, appId, day, indexedProperties);
             _writers[key] = partition;
             return partition;
         }
     }
 
     /// <summary>
-    /// Open a read-only connection to an existing partition, or null if the file is absent.
+    /// Open a read-only connection to an existing partition, or null if there is none.
     /// Callers dispose the connection when done.
     /// </summary>
-    public SqliteConnection? OpenReader(string appId, DateOnly day)
-    {
-        var path = Paths.PartitionPath(appId, day);
-        if (!File.Exists(path))
-        {
-            return null;
-        }
+    public DbConnection? OpenReader(string appId, DateOnly day) =>
+        Dialect.OpenPartitionReader(appId, day);
 
-        var conn = new SqliteConnection(new SqliteConnectionStringBuilder
-        {
-            DataSource = path,
-            Mode = SqliteOpenMode.ReadOnly,
-            Pooling = true,
-        }.ToString());
-        conn.Open();
-        return conn;
-    }
+    /// <summary>The table an app-day's events live in, for building queries against it.</summary>
+    public string Table(string appId, DateOnly day) => Dialect.PartitionTable(appId, day);
 
-    /// <summary>Partition days that exist on disk for an app, newest first (SPEC §4.1).</summary>
+    /// <summary>Partition days that exist for an app, newest first (SPEC §4.1).</summary>
     public IReadOnlyList<DateOnly> ExistingDaysDescending(string appId) =>
-        Paths.ListPartitions(appId).Select(p => p.Day).OrderDescending().ToList();
+        Dialect.PartitionDays(appId).OrderDescending().ToList();
 
     /// <summary>Close an open writer for a specific app-day, if any (used before deletion).</summary>
     public void ClosePartition(string appId, DateOnly day)

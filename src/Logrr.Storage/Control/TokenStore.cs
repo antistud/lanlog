@@ -1,5 +1,6 @@
+using System.Data.Common;
 using Logrr.Contracts;
-using Microsoft.Data.Sqlite;
+using Logrr.Storage.Sql;
 
 namespace Logrr.Storage.Control;
 
@@ -13,19 +14,19 @@ public sealed class TokenStore(ControlDatabase db)
         cmd.CommandText = """
             INSERT INTO tokens (id, app_id, name, prefix, hash, scopes,
                                 expires_utc, last_used_utc, revoked_utc, created_utc)
-            VALUES ($id, $app, $name, $prefix, $hash, $scopes,
-                    $expires, $lastUsed, $revoked, $created);
+            VALUES (@id, @app, @name, @prefix, @hash, @scopes,
+                    @expires, @lastUsed, @revoked, @created);
             """;
-        cmd.Add("$id", token.Id);
-        cmd.Add("$app", token.AppId);
-        cmd.Add("$name", token.Name);
-        cmd.Add("$prefix", token.Prefix);
-        cmd.Add("$hash", token.Hash);
-        cmd.Add("$scopes", (int)token.Scopes);
-        cmd.Add("$expires", token.ExpiresUtc?.ToUnixTimeMilliseconds());
-        cmd.Add("$lastUsed", token.LastUsedUtc?.ToUnixTimeMilliseconds());
-        cmd.Add("$revoked", token.RevokedUtc?.ToUnixTimeMilliseconds());
-        cmd.Add("$created", token.CreatedUtc.ToUnixTimeMilliseconds());
+        cmd.Add("@id", token.Id);
+        cmd.Add("@app", token.AppId);
+        cmd.Add("@name", token.Name);
+        cmd.Add("@prefix", token.Prefix);
+        cmd.Add("@hash", token.Hash);
+        cmd.Add("@scopes", (int)token.Scopes);
+        cmd.Add("@expires", token.ExpiresUtc?.ToUnixTimeMilliseconds());
+        cmd.Add("@lastUsed", token.LastUsedUtc?.ToUnixTimeMilliseconds());
+        cmd.Add("@revoked", token.RevokedUtc?.ToUnixTimeMilliseconds());
+        cmd.Add("@created", token.CreatedUtc.ToUnixTimeMilliseconds());
         cmd.ExecuteNonQuery();
     }
 
@@ -34,8 +35,8 @@ public sealed class TokenStore(ControlDatabase db)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT * FROM tokens WHERE prefix = $prefix;";
-        cmd.Add("$prefix", prefix);
+        cmd.CommandText = "SELECT * FROM tokens WHERE prefix = @prefix;";
+        cmd.Add("@prefix", prefix);
         using var reader = cmd.ExecuteReader();
         return reader.Read() ? Map(reader) : null;
     }
@@ -44,8 +45,8 @@ public sealed class TokenStore(ControlDatabase db)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT * FROM tokens WHERE app_id = $app ORDER BY created_utc DESC;";
-        cmd.Add("$app", appId);
+        cmd.CommandText = "SELECT * FROM tokens WHERE app_id = @app ORDER BY created_utc DESC;";
+        cmd.Add("@app", appId);
         using var reader = cmd.ExecuteReader();
         var tokens = new List<TokenRecord>();
         while (reader.Read())
@@ -59,9 +60,9 @@ public sealed class TokenStore(ControlDatabase db)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "UPDATE tokens SET revoked_utc = $now WHERE id = $id;";
-        cmd.Add("$now", now.ToUnixTimeMilliseconds());
-        cmd.Add("$id", id);
+        cmd.CommandText = "UPDATE tokens SET revoked_utc = @now WHERE id = @id;";
+        cmd.Add("@now", now.ToUnixTimeMilliseconds());
+        cmd.Add("@id", id);
         cmd.ExecuteNonQuery();
     }
 
@@ -70,29 +71,26 @@ public sealed class TokenStore(ControlDatabase db)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "UPDATE tokens SET last_used_utc = $now WHERE id = $id;";
-        cmd.Add("$now", now.ToUnixTimeMilliseconds());
-        cmd.Add("$id", id);
+        cmd.CommandText = "UPDATE tokens SET last_used_utc = @now WHERE id = @id;";
+        cmd.Add("@now", now.ToUnixTimeMilliseconds());
+        cmd.Add("@id", id);
         cmd.ExecuteNonQuery();
     }
 
-    private static TokenRecord Map(SqliteDataReader r) => new()
+    private static TokenRecord Map(DbDataReader r) => new()
     {
         Id = r.GetString(r.GetOrdinal("id")),
         AppId = r.GetString(r.GetOrdinal("app_id")),
-        Name = r.IsDBNull(r.GetOrdinal("name")) ? null : r.GetString(r.GetOrdinal("name")),
+        Name = r.Str("name"),
         Prefix = r.GetString(r.GetOrdinal("prefix")),
-        Hash = (byte[])r["hash"],
-        Scopes = (TokenScopes)r.GetInt32(r.GetOrdinal("scopes")),
+        Hash = r.Bytes("hash")!,
+        Scopes = (TokenScopes)r.Int32("scopes"),
         ExpiresUtc = ReadTs(r, "expires_utc"),
         LastUsedUtc = ReadTs(r, "last_used_utc"),
         RevokedUtc = ReadTs(r, "revoked_utc"),
-        CreatedUtc = DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64(r.GetOrdinal("created_utc"))),
+        CreatedUtc = DateTimeOffset.FromUnixTimeMilliseconds(r.Int64("created_utc")),
     };
 
-    internal static DateTimeOffset? ReadTs(SqliteDataReader r, string column)
-    {
-        var ord = r.GetOrdinal(column);
-        return r.IsDBNull(ord) ? null : DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64(ord));
-    }
+    internal static DateTimeOffset? ReadTs(DbDataReader r, string column) =>
+        r.LongNull(column) is { } ms ? DateTimeOffset.FromUnixTimeMilliseconds(ms) : null;
 }

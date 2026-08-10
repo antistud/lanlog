@@ -104,22 +104,26 @@ public static class AuthEndpoints
             .Build();
 
         app.MapGet("/auth/windows", async (HttpContext http, UserStore users, StoragePaths paths,
-            ILoggerFactory loggerFactory, string? returnUrl) =>
+            ILoggerFactory loggerFactory, string? returnUrl, int? diag) =>
         {
             var log = loggerFactory.CreateLogger("Logrr.Auth.Windows");
+            // A refusal discards returnUrl, so the sign-in page's "test the handshake" needs its own
+            // way home - otherwise the one action that reports the identity throws it away.
+            var refused = diag == 1 ? "/login?local=1&diag=1" : "/login?local=1";
+
             var account = http.User.Identity?.Name;
             if (string.IsNullOrWhiteSpace(account))
             {
                 // Authorized but nameless: the host let the request through without an identity.
                 log.LogWarning("Windows sign-in produced no account name; check the host's Windows authentication settings.");
-                return Results.Redirect("/login?local=1&windows=anonymous");
+                return Results.Redirect($"{refused}&windows=anonymous");
             }
 
             var user = users.GetByWindowsAccount(account);
             if (user is null)
             {
                 log.LogInformation("Windows sign-in refused: no Logrr account is mapped to {Account}.", account);
-                return Results.Redirect($"/login?local=1&windows=unmapped&account={Uri.EscapeDataString(account)}");
+                return Results.Redirect($"{refused}&windows=unmapped&account={Uri.EscapeDataString(account)}");
             }
 
             await SignIn(http, user, viaWindows: true);

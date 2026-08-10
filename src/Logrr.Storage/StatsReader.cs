@@ -1,7 +1,8 @@
+using System.Data.Common;
 using System.Text.Json;
 using Logrr.Contracts;
 using Logrr.Storage.Control;
-using Microsoft.Data.Sqlite;
+using Logrr.Storage.Sql;
 
 namespace Logrr.Storage;
 
@@ -24,29 +25,30 @@ public sealed class StatsReader(PartitionManager partitions, AckStore acks)
         var ackSnapshot = acks.Snapshot(appId);
         var ackedTypesJson = ackSnapshot.IsEmpty ? null : JsonSerializer.Serialize(ackSnapshot.ByEventType);
 
-        foreach (var (day, path) in partitions.Paths.ListPartitions(appId))
+        foreach (var day in partitions.ExistingDaysDescending(appId))
         {
-            storageBytes += SafeLength(path);
+            storageBytes += partitions.Dialect.PartitionSizeBytes(appId, day);
 
             using var conn = partitions.OpenReader(appId, day);
             if (conn is null)
             {
                 continue;
             }
+            var table = partitions.Table(appId, day);
 
             using (var cmd = conn.CreateCommand())
             {
-                cmd.CommandText = "SELECT level, COUNT(*), MAX(ts) FROM events GROUP BY level;";
+                cmd.CommandText = $"SELECT level, COUNT(*), MAX(ts) FROM {table} GROUP BY level;";
                 using var reader = cmd.ExecuteReader();
                 while (reader.Read())
                 {
-                    var level = (LogLevel)reader.GetInt32(0);
-                    var count = reader.GetInt64(1);
+                    var level = (LogLevel)Convert.ToInt32(reader.GetValue(0));
+                    var count = Convert.ToInt64(reader.GetValue(1));
                     total += count;
                     byLevel[level.ToString()] = byLevel.GetValueOrDefault(level.ToString()) + count;
                     if (!reader.IsDBNull(2))
                     {
-                        var ts = DateTimeOffset.UnixEpoch.AddTicks(reader.GetInt64(2) * 10);
+                        var ts = DateTimeOffset.UnixEpoch.AddTicks(Convert.ToInt64(reader.GetValue(2)) * 10);
                         if (lastEvent is null || ts > lastEvent)
                         {
                             lastEvent = ts;
@@ -58,24 +60,26 @@ public sealed class StatsReader(PartitionManager partitions, AckStore acks)
             // Per-hour buckets for the last 24h only.
             using (var cmd = conn.CreateCommand())
             {
-                cmd.CommandText = """
+                // Integer division on both backends, so the hour index is exact either way.
+                cmd.CommandText = $"""
                     SELECT ts / 3600000000 AS hour, COUNT(*)
-                    FROM events WHERE ts >= $since
-                    GROUP BY hour;
+                    FROM {table} WHERE ts >= @since
+                    GROUP BY ts / 3600000000;
                     """;
-                cmd.Add("$since", since24h);
+                cmd.Add("@since", since24h);
                 using var reader = cmd.ExecuteReader();
                 while (reader.Read())
                 {
-                    var hourStart = DateTimeOffset.FromUnixTimeSeconds(reader.GetInt64(0) * 3600);
+                    var hourStart = DateTimeOffset.FromUnixTimeSeconds(Convert.ToInt64(reader.GetValue(0)) * 3600);
                     var key = hourStart.UtcDateTime.ToString("yyyy-MM-ddTHH:00Z");
-                    byHour[key] = byHour.GetValueOrDefault(key) + reader.GetInt64(1);
+                    byHour[key] = byHour.GetValueOrDefault(key) + Convert.ToInt64(reader.GetValue(1));
                 }
             }
 
             if (ackedTypesJson is not null)
             {
-                unacknowledgedErrors += CountUnacknowledgedErrors(conn, ackSnapshot, ackedTypesJson);
+                unacknowledgedErrors += CountUnacknowledgedErrors(
+                    conn, partitions.Dialect, table, ackSnapshot, ackedTypesJson);
             }
         }
 
@@ -102,35 +106,38 @@ public sealed class StatsReader(PartitionManager partitions, AckStore acks)
     /// Errors in this partition that no ack covers: newer than the app-wide watermark, and —
     /// for events carrying an event type — newer than that type's own watermark.
     /// </summary>
-    private static long CountUnacknowledgedErrors(SqliteConnection conn, AckSnapshot acks, string ackedTypesJson)
+    /// <remarks>
+    /// The per-type watermarks arrive as a JSON object rather than a temp table so this stays a
+    /// single parameterised statement. Shredding it is the one place the two backends need
+    /// different SQL: SQLite has <c>json_each</c>, SQL Server has <c>OPENJSON</c>.
+    /// </remarks>
+    private static long CountUnacknowledgedErrors(
+        DbConnection conn, SqlDialect dialect, string table, AckSnapshot acks, string ackedTypesJson)
     {
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = $"""
-            SELECT COUNT(*) FROM events
-            WHERE level >= {AlertLevel} AND ts > $appWide
-              AND NOT EXISTS (
-                SELECT 1 FROM json_each($types) AS a
-                WHERE CAST(a.key AS INTEGER) = events.event_type
-                  AND events.ts <= CAST(a.value AS INTEGER));
-            """;
-        cmd.Add("$appWide", acks.AppWideThroughTs);
-        cmd.Add("$types", ackedTypesJson);
+        cmd.CommandText = dialect.IsSqlServer
+            ? $"""
+              SELECT COUNT(*) FROM {table} e
+              WHERE e.level >= {AlertLevel} AND e.ts > @appWide
+                AND NOT EXISTS (
+                  SELECT 1 FROM OPENJSON(@types) AS a
+                  WHERE CAST(a.[key] AS BIGINT) = e.event_type
+                    AND e.ts <= CAST(a.[value] AS BIGINT));
+              """
+            : $"""
+              SELECT COUNT(*) FROM {table}
+              WHERE level >= {AlertLevel} AND ts > @appWide
+                AND NOT EXISTS (
+                  SELECT 1 FROM json_each(@types) AS a
+                  WHERE CAST(a.key AS INTEGER) = {table}.event_type
+                    AND {table}.ts <= CAST(a.value AS INTEGER));
+              """;
+        cmd.Add("@appWide", acks.AppWideThroughTs);
+        cmd.Add("@types", ackedTypesJson);
         return Convert.ToInt64(cmd.ExecuteScalar());
     }
 
-    /// <summary>Total on-disk bytes for an app across its partitions (SPEC §4.6 size cap).</summary>
+    /// <summary>Total stored bytes for an app across its partitions (SPEC §4.6 size cap).</summary>
     public long StorageBytes(string appId) =>
-        partitions.Paths.ListPartitions(appId).Sum(p => SafeLength(p.Path));
-
-    private static long SafeLength(string path)
-    {
-        try
-        {
-            return new FileInfo(path).Length;
-        }
-        catch (IOException)
-        {
-            return 0;
-        }
-    }
+        partitions.ExistingDaysDescending(appId).Sum(day => partitions.Dialect.PartitionSizeBytes(appId, day));
 }

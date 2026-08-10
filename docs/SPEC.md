@@ -353,6 +353,55 @@ be called from a 15-line VB.NET helper.
 | Max nesting depth | 8 |
 | Timestamp skew accepted | −30 days .. +1 hour |
 
+### 6.4 Windows Event Log collection
+
+The one ingestion path with no client at the other end. The server reads the Windows Event
+Log itself — locally, and over RPC for other machines — so collected boxes need nothing
+installed. That keeps the "no agent" promise in §1 literally true rather than merely
+true-for-your-own-apps, and it is the reason this is a server feature and not a shipper.
+
+Off by default; configured in `Logrr:WindowsEvents` (§12), one entry per machine.
+
+**Mapping.** A record becomes an ordinary event, so search, filters, rules and tickets all
+work on it unchanged:
+
+| Windows | Logrr |
+|---|---|
+| `Level` 1..5 | `Level` — inverted (1 Critical → Fatal, 5 Verbose → Verbose); 0 LogAlways → Information |
+| `Channel` / `Provider` / `EventId` | `Template`, as the literal text `[System/Service Control Manager 7031]` |
+| `FormatDescription()` | `Message` |
+| `ProviderName` | `Source` |
+| `MachineName` | `Machine` |
+| `ActivityId` | `TraceId` |
+| record metadata | properties `Channel`, `ProviderName`, `EventId`, `RecordId`, `UserId`, `Task`, `Opcode`, `Keywords`, `Data0..n` |
+
+The template carries the event's *identity*, not its text, because `event_type` is a hash of
+the template (§4.3). Putting the description there would give every occurrence its own group;
+sharing one placeholder template would collapse the whole event log into a single group. As
+written, one Windows event id is one group — so dedupe, thresholds and cooldown (§10.4)
+behave the same as they do for an application exception.
+
+Publisher message resources are frequently unavailable when reading a remote machine, so a
+record whose description will not render still produces a readable message synthesised from
+its raw data rather than an empty one.
+
+**Cursors.** A high-water mark per (machine, channel) in `winlog_cursors`, keyed on
+`EventRecordID`. A restart resumes exactly where it left off. Clearing a log restarts
+`EventRecordID` at 1, which would otherwise strand the cursor above every future record; an
+empty read triggers a check of the newest id and resets the cursor when it has gone backwards.
+
+**First run** starts at the tail. An event log holds months of history, and importing it
+wholesale would bury the app and mostly be discarded by the −30 day skew bound anyway. Set
+`InitialBackfillHours` to pull a window instead (clamped to 720 h for the same reason).
+
+**Filtering** is the app's `MinimumLevel` and nothing new: the collector translates it into a
+`Level` ceiling in the event log query, so records below the floor are never read off the wire
+rather than being fetched and discarded. Raising the floor in the UI narrows collection.
+
+**Failure is per target.** An unreachable machine logs once, drops to debug while it stays
+down, and logs again on recovery; its cursor does not move and the other machines are
+unaffected. Nothing here can fail an ingest request — there is no request.
+
 ---
 
 ## 7. Query API
@@ -835,6 +884,14 @@ misconfigured IdP can't lock you out of your own log server.
       "GlobalMaxDeliveriesPerHour": 500, "DeadLetterRetentionDays": 30
     },
     "Auth": { "Windows": { "Enabled": false, "AutoSignIn": true } },
+    "WindowsEvents": {
+      "Enabled": false, "PollIntervalSeconds": 60,
+      "MaxEventsPerPoll": 500, "MaxBatchesPerPoll": 10, "InitialBackfillHours": 0,
+      "Sources": [
+        { "Machine": "WEB01", "AppId": "windows-web01",
+          "Channels": ["Application", "System"], "MinimumLevel": "Warning" }
+      ]
+    },
     "Defaults": { "RetentionDays": 14, "MaxSizeMb": 2048 },
     "SelfLog": { "MinimumLevel": "Information", "RetainedFileCount": 7 }
   }
@@ -844,6 +901,12 @@ misconfigured IdP can't lock you out of your own log server.
 Runtime-changeable settings (per-app retention, rules, destinations) live in `control.db`
 and are edited in the UI. Only infrastructure settings live in the file. Don't split the
 same concern across both.
+
+`WindowsEvents` obeys that line rather than crossing it: which machines to reach and with
+what credentials is deployment topology, like the Windows sign-in switch above it. The
+`MinimumLevel` on a source is used *only* to seed the app the first time it is created —
+after that the app's own setting in `control.db` governs, and the collector reads it back to
+narrow its query (§6.4). One concern, one home.
 
 ---
 

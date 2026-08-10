@@ -151,5 +151,19 @@ public static class ControlSchema
         CREATE UNIQUE INDEX ux_users_windows_account
           ON users(windows_account COLLATE NOCASE) WHERE windows_account IS NOT NULL;
         """,
+
+        // v8 - agentless Windows Event Log collection (SPEC section 6.4). One high-water mark
+        // per (machine, channel) so a restart resumes where the collector left off instead of
+        // re-shipping or skipping. EventRecordID is monotonic within a channel and resets to 1
+        // when the log is cleared, which the collector detects and recovers from.
+        """
+        CREATE TABLE winlog_cursors (
+          machine        TEXT NOT NULL,   -- as configured, lower-cased
+          channel        TEXT NOT NULL,   -- log name, e.g. 'Application'
+          last_record_id INTEGER NOT NULL,
+          updated_utc    INTEGER NOT NULL,
+          PRIMARY KEY (machine, channel)
+        );
+        """,
     ];
 }

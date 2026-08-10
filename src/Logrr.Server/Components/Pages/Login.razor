@@ -2,6 +2,7 @@
 @layout Logrr.Server.Components.Layout.MainLayout
 @attribute [AllowAnonymous]
 @inject Logrr.Server.WindowsAuthOptions WindowsAuth
+@inject Logrr.Server.Auth.WindowsAuthDiagnostics Diagnostics
 @inject NavigationManager Nav
 
 <PageTitle>Sign in — Logrr</PageTitle>
@@ -60,7 +61,48 @@
         </div>
         <p class="muted-2 text-right" style="font-size:var(--fs-xs); margin-top:var(--sp-3); text-align:center">
             First run? See <code>FIRST-RUN-CREDENTIALS.txt</code> in the data directory.
+            <br />
+            <a href="@DiagnosticsUrl">Windows sign-in not working?</a>
         </p>
+
+        @if (ShowDiagnostics)
+        {
+            <div class="card" style="margin-top:var(--sp-3)">
+                <h3 style="margin-bottom:var(--sp-1)">Windows sign-in diagnostics</h3>
+                <p class="muted mb-4" style="font-size:var(--fs-sm)">
+                    What this server can see. Work top to bottom — the first ✕ is the reason you are looking at a password form.
+                </p>
+
+                @foreach (var check in _checks)
+                {
+                    <div style="display:flex; gap:var(--sp-2); margin-bottom:var(--sp-3); align-items:flex-start">
+                        <span style="flex:none; font-weight:700; line-height:1.4; color:@Colour(check.Status)">@Glyph(check.Status)</span>
+                        <div style="min-width:0">
+                            <div style="font-weight:600; font-size:var(--fs-sm)">@check.Title</div>
+                            <div class="muted" style="font-size:var(--fs-xs)">@check.Detail</div>
+                            @if (check.Fix is not null)
+                            {
+                                <div class="code" style="font-size:var(--fs-xs); margin-top:var(--sp-1); padding:var(--sp-2); white-space:pre-wrap; word-break:break-word">@check.Fix</div>
+                            }
+                        </div>
+                    </div>
+                }
+
+                @if (WindowsAuth.Enabled)
+                {
+                    <a class="btn w-full" style="justify-content:center" href="@TestUrl">
+                        Test the handshake
+                    </a>
+                    <span class="hint">
+                        Runs the sign-in and comes back here with the exact identity the server saw — that is the string to link the account to.
+                    </span>
+                }
+
+                <p class="muted-2" style="font-size:var(--fs-xs); margin-top:var(--sp-3)">
+                    Full setup and troubleshooting: <code>docs/SETUP.md</code> §8.
+                </p>
+            </div>
+        }
     </div>
 </div>
 
@@ -72,20 +114,58 @@
     [SupplyParameterFromQuery(Name = "local")] public int? Local { get; set; }
     [SupplyParameterFromQuery(Name = "windows")] public string? WindowsStatus { get; set; }
     [SupplyParameterFromQuery(Name = "account")] public string? Account { get; set; }
+    [SupplyParameterFromQuery(Name = "diag")] public int? Diag { get; set; }
+
+    [CascadingParameter] private HttpContext? Http { get; set; }
+
+    private IReadOnlyList<Logrr.Server.Auth.Check> _checks = [];
 
     private bool Error => ErrorFlag == 1;
+
+    private bool ShowDiagnostics => Diag == 1;
+
+    private string DiagnosticsUrl => $"/login?local=1&diag=1&returnUrl={Uri.EscapeDataString(LocalReturnUrl)}";
+
+    /// <summary>
+    /// Sign in for real, but come back to the diagnostics if refused - that round trip is what
+    /// reports the exact identity string an account has to be linked to.
+    /// </summary>
+    private string TestUrl => $"/auth/windows?diag=1&returnUrl={Uri.EscapeDataString(LocalReturnUrl)}";
+
+    private static string Glyph(Logrr.Server.Auth.CheckStatus status) => status switch
+    {
+        Logrr.Server.Auth.CheckStatus.Ok => "✓",
+        Logrr.Server.Auth.CheckStatus.Problem => "✕",
+        _ => "•",
+    };
+
+    private static string Colour(Logrr.Server.Auth.CheckStatus status) => status switch
+    {
+        Logrr.Server.Auth.CheckStatus.Ok => "var(--ok, #16a34a)",
+        Logrr.Server.Auth.CheckStatus.Problem => "var(--danger)",
+        _ => "var(--accent)",
+    };
 
     private string LocalReturnUrl =>
         !string.IsNullOrEmpty(ReturnUrl) && ReturnUrl.StartsWith('/') && !ReturnUrl.StartsWith("//") ? ReturnUrl : "/";
 
-    protected override void OnInitialized()
+    protected override async Task OnInitializedAsync()
     {
         // Hand the browser straight to the Windows handshake so a domain user never sees this page.
         // Suppressed whenever the form was asked for explicitly (?local=1) - which is where every
         // Windows failure and an explicit sign-out land, so this can never become a loop.
-        if (WindowsAuth.Enabled && WindowsAuth.AutoSignIn && Local != 1 && WindowsStatus is null)
+        if (WindowsAuth.Enabled && WindowsAuth.AutoSignIn && Local != 1 && !ShowDiagnostics && WindowsStatus is null)
         {
             Nav.NavigateTo($"/auth/windows?returnUrl={Uri.EscapeDataString(LocalReturnUrl)}", forceLoad: true);
+            return;
+        }
+
+        // Only on request: the checks hit the database and read host state, and every visitor
+        // loads this page.
+        if (ShowDiagnostics)
+        {
+            var identity = Http?.User.Identity is { IsAuthenticated: true, Name: { Length: > 0 } name } ? name : null;
+            _checks = await Diagnostics.RunAsync(Http?.Request.Host.Value, identity, Account);
         }
     }
 }

@@ -1,6 +1,7 @@
+using System.Data.Common;
 using System.Text.Json;
 using Logrr.Contracts;
-using Microsoft.Data.Sqlite;
+using Logrr.Storage.Sql;
 
 namespace Logrr.Storage.Control;
 
@@ -14,17 +15,17 @@ public sealed class AppStore(ControlDatabase db)
         cmd.CommandText = """
             INSERT INTO apps (id, name, description, retention_days, max_size_mb,
                               minimum_level, indexed_properties, is_enabled, created_utc)
-            VALUES ($id, $name, $desc, $ret, $max, $min, $idx, $en, $created);
+            VALUES (@id, @name, @desc, @ret, @max, @min, @idx, @en, @created);
             """;
-        cmd.Add("$id", app.Id);
-        cmd.Add("$name", app.Name);
-        cmd.Add("$desc", app.Description);
-        cmd.Add("$ret", app.RetentionDays);
-        cmd.Add("$max", app.MaxSizeMb);
-        cmd.Add("$min", (int)app.MinimumLevel);
-        cmd.Add("$idx", JsonSerializer.Serialize(app.IndexedProperties));
-        cmd.Add("$en", app.IsEnabled ? 1 : 0);
-        cmd.Add("$created", app.CreatedUtc.ToUnixTimeMilliseconds());
+        cmd.Add("@id", app.Id);
+        cmd.Add("@name", app.Name);
+        cmd.Add("@desc", app.Description);
+        cmd.Add("@ret", app.RetentionDays);
+        cmd.Add("@max", app.MaxSizeMb);
+        cmd.Add("@min", (int)app.MinimumLevel);
+        cmd.Add("@idx", JsonSerializer.Serialize(app.IndexedProperties));
+        cmd.Add("@en", app.IsEnabled ? 1 : 0);
+        cmd.Add("@created", app.CreatedUtc.ToUnixTimeMilliseconds());
         cmd.ExecuteNonQuery();
     }
 
@@ -32,8 +33,8 @@ public sealed class AppStore(ControlDatabase db)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT * FROM apps WHERE id = $id;";
-        cmd.Add("$id", id);
+        cmd.CommandText = "SELECT * FROM apps WHERE id = @id;";
+        cmd.Add("@id", id);
         using var reader = cmd.ExecuteReader();
         return reader.Read() ? Map(reader) : null;
     }
@@ -57,43 +58,38 @@ public sealed class AppStore(ControlDatabase db)
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            UPDATE apps SET name = $name, description = $desc, retention_days = $ret,
-              max_size_mb = $max, minimum_level = $min, indexed_properties = $idx,
-              is_enabled = $en
-            WHERE id = $id;
+            UPDATE apps SET name = @name, description = @desc, retention_days = @ret,
+              max_size_mb = @max, minimum_level = @min, indexed_properties = @idx,
+              is_enabled = @en
+            WHERE id = @id;
             """;
-        cmd.Add("$id", app.Id);
-        cmd.Add("$name", app.Name);
-        cmd.Add("$desc", app.Description);
-        cmd.Add("$ret", app.RetentionDays);
-        cmd.Add("$max", app.MaxSizeMb);
-        cmd.Add("$min", (int)app.MinimumLevel);
-        cmd.Add("$idx", JsonSerializer.Serialize(app.IndexedProperties));
-        cmd.Add("$en", app.IsEnabled ? 1 : 0);
+        cmd.Add("@id", app.Id);
+        cmd.Add("@name", app.Name);
+        cmd.Add("@desc", app.Description);
+        cmd.Add("@ret", app.RetentionDays);
+        cmd.Add("@max", app.MaxSizeMb);
+        cmd.Add("@min", (int)app.MinimumLevel);
+        cmd.Add("@idx", JsonSerializer.Serialize(app.IndexedProperties));
+        cmd.Add("@en", app.IsEnabled ? 1 : 0);
         cmd.ExecuteNonQuery();
     }
 
-    internal static AppRecord Map(SqliteDataReader r) => new()
+    internal static AppRecord Map(DbDataReader r) => new()
     {
         Id = r.GetString(r.GetOrdinal("id")),
         Name = r.GetString(r.GetOrdinal("name")),
-        Description = r.IsDBNull(r.GetOrdinal("description")) ? null : r.GetString(r.GetOrdinal("description")),
-        RetentionDays = r.GetInt32(r.GetOrdinal("retention_days")),
-        MaxSizeMb = r.GetInt32(r.GetOrdinal("max_size_mb")),
-        MinimumLevel = (LogLevel)r.GetInt32(r.GetOrdinal("minimum_level")),
+        Description = r.Str("description"),
+        RetentionDays = r.Int32("retention_days"),
+        MaxSizeMb = r.Int32("max_size_mb"),
+        MinimumLevel = (LogLevel)r.Int32("minimum_level"),
         IndexedProperties = ReadStringList(r, "indexed_properties"),
-        IsEnabled = r.GetInt32(r.GetOrdinal("is_enabled")) != 0,
-        CreatedUtc = DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64(r.GetOrdinal("created_utc"))),
+        IsEnabled = r.Bool("is_enabled"),
+        CreatedUtc = DateTimeOffset.FromUnixTimeMilliseconds(r.Int64("created_utc")),
     };
 
-    internal static IReadOnlyList<string> ReadStringList(SqliteDataReader r, string column)
+    internal static IReadOnlyList<string> ReadStringList(DbDataReader r, string column)
     {
-        var ord = r.GetOrdinal(column);
-        if (r.IsDBNull(ord))
-        {
-            return [];
-        }
-        var json = r.GetString(ord);
+        var json = r.Str(column);
         return string.IsNullOrWhiteSpace(json)
             ? []
             : JsonSerializer.Deserialize<List<string>>(json) ?? [];

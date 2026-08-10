@@ -130,6 +130,29 @@ public sealed class IngestService(IngestPipeline pipeline, IngestLimits limits, 
         return new IngestResult { Accepted = accepted, Rejected = rejected, Errors = errors };
     }
 
+    /// <summary>
+    /// Ingest events built in-process rather than parsed off the wire — currently the Windows
+    /// Event Log collector (SPEC §6.4). Deliberately routed through the same <see cref="Handle"/>
+    /// as the HTTP endpoints so the level floor, skew bounds and markers cannot drift between
+    /// the two paths. Callers supply a fully-formed event, including <c>EventType</c>.
+    /// </summary>
+    public IngestResult IngestEvents(IEnumerable<LogEvent> events, AppRecord app)
+    {
+        var now = clock();
+        var accepted = 0;
+        var rejected = 0;
+        var errors = new List<string>();
+
+        var i = 0;
+        foreach (var ev in events)
+        {
+            i++;
+            Handle(ev, app, now, i, ev.Message.Length, ref accepted, ref rejected, errors);
+        }
+
+        return new IngestResult { Accepted = accepted, Rejected = rejected, Errors = errors };
+    }
+
     private void Handle(LogEvent ev, AppRecord app, DateTimeOffset now, int index, int approxSize,
         ref int accepted, ref int rejected, List<string> errors)
     {

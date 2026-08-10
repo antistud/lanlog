@@ -46,10 +46,15 @@ public sealed partial class FilterExpression
         }
     }
 
-    /// <summary>Emit a parameterised SQL <c>WHERE</c> fragment for the query backend.</summary>
-    public (string Sql, IReadOnlyList<object?> Parameters) ToSql()
+    /// <summary>
+    /// Emit a parameterised SQL <c>WHERE</c> fragment for the query backend, in the flavour the
+    /// configured storage backend speaks (SPEC §4.7). Parameters are positional and named
+    /// <c>@p0…@pN</c>; the caller binds them in order.
+    /// </summary>
+    public (string Sql, IReadOnlyList<object?> Parameters) ToSql(
+        FilterSqlDialect dialect = FilterSqlDialect.Sqlite)
     {
-        var b = new SqlBuilder();
+        var b = new SqlBuilder(dialect);
         _root.ToSql(b);
         return (b.Sql, b.Parameters);
     }

@@ -1,6 +1,7 @@
 using Logrr.Contracts;
 using Logrr.Storage.Control;
-using Microsoft.Data.Sqlite;
+using System.Data.Common;
+using Logrr.Storage.Sql;
 
 namespace Logrr.Notify;
 
@@ -21,38 +22,38 @@ public sealed class RuleStore(ControlDatabase db)
                 threshold_count, threshold_window_minutes, dedupe_key_template, cooldown_minutes,
                 destination_id, body_template_override, max_fires_per_hour, is_dry_run, is_enabled,
                 auto_disabled_reason, last_fired_utc, created_utc)
-              VALUES ($id, $name, $app, $filter, $min, $trig,
-                $tc, $tw, $dedupe, $cool, $dest, $override, $maxFires, $dry, $en,
-                $reason, $lastFired, $created);
+              VALUES (@id, @name, @app, @filter, @min, @trig,
+                @tc, @tw, @dedupe, @cool, @dest, @override, @maxFires, @dry, @en,
+                @reason, @lastFired, @created);
               """
             : """
-              UPDATE rules SET name=$name, app_id=$app, filter=$filter, minimum_level=$min,
-                trigger_type=$trig, threshold_count=$tc, threshold_window_minutes=$tw,
-                dedupe_key_template=$dedupe, cooldown_minutes=$cool, destination_id=$dest,
-                body_template_override=$override, max_fires_per_hour=$maxFires, is_dry_run=$dry,
-                is_enabled=$en, auto_disabled_reason=$reason
-              WHERE id=$id;
+              UPDATE rules SET name=@name, app_id=@app, filter=@filter, minimum_level=@min,
+                trigger_type=@trig, threshold_count=@tc, threshold_window_minutes=@tw,
+                dedupe_key_template=@dedupe, cooldown_minutes=@cool, destination_id=@dest,
+                body_template_override=@override, max_fires_per_hour=@maxFires, is_dry_run=@dry,
+                is_enabled=@en, auto_disabled_reason=@reason
+              WHERE id=@id;
               """;
-        cmd.P("$id", x.Id);
-        cmd.P("$name", x.Name);
-        cmd.P("$app", x.AppId);
-        cmd.P("$filter", x.Filter);
-        cmd.P("$min", (int)x.MinimumLevel);
-        cmd.P("$trig", (int)x.TriggerType);
-        cmd.P("$tc", x.ThresholdCount);
-        cmd.P("$tw", x.ThresholdWindowMinutes);
-        cmd.P("$dedupe", x.DedupeKeyTemplate);
-        cmd.P("$cool", x.CooldownMinutes);
-        cmd.P("$dest", x.DestinationId);
-        cmd.P("$override", x.BodyTemplateOverride);
-        cmd.P("$maxFires", x.MaxFiresPerHour);
-        cmd.P("$dry", x.IsDryRun ? 1 : 0);
-        cmd.P("$en", x.IsEnabled ? 1 : 0);
-        cmd.P("$reason", x.AutoDisabledReason);
+        cmd.P("@id", x.Id);
+        cmd.P("@name", x.Name);
+        cmd.P("@app", x.AppId);
+        cmd.P("@filter", x.Filter);
+        cmd.P("@min", (int)x.MinimumLevel);
+        cmd.P("@trig", (int)x.TriggerType);
+        cmd.P("@tc", x.ThresholdCount);
+        cmd.P("@tw", x.ThresholdWindowMinutes);
+        cmd.P("@dedupe", x.DedupeKeyTemplate);
+        cmd.P("@cool", x.CooldownMinutes);
+        cmd.P("@dest", x.DestinationId);
+        cmd.P("@override", x.BodyTemplateOverride);
+        cmd.P("@maxFires", x.MaxFiresPerHour);
+        cmd.P("@dry", x.IsDryRun ? 1 : 0);
+        cmd.P("@en", x.IsEnabled ? 1 : 0);
+        cmd.P("@reason", x.AutoDisabledReason);
         if (insert)
         {
-            cmd.P("$lastFired", x.LastFiredUtc.Ms());
-            cmd.P("$created", x.CreatedUtc.Ms());
+            cmd.P("@lastFired", x.LastFiredUtc.Ms());
+            cmd.P("@created", x.CreatedUtc.Ms());
         }
         cmd.ExecuteNonQuery();
     }
@@ -61,8 +62,8 @@ public sealed class RuleStore(ControlDatabase db)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT * FROM rules WHERE id = $id;";
-        cmd.P("$id", id);
+        cmd.CommandText = "SELECT * FROM rules WHERE id = @id;";
+        cmd.P("@id", id);
         using var r = cmd.ExecuteReader();
         return r.Read() ? Map(r) : null;
     }
@@ -83,8 +84,9 @@ public sealed class RuleStore(ControlDatabase db)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT * FROM rules WHERE is_enabled = 1 AND (app_id IS NULL OR app_id = $app);";
-        cmd.P("$app", appId);
+        cmd.CommandText = "SELECT * FROM rules WHERE is_enabled = 1 AND (app_id IS NULL OR app_id = @app);";
+        // is_enabled is BIT on SQL Server and INTEGER on SQLite; "= 1" is valid against both.
+        cmd.P("@app", appId);
         using var r = cmd.ExecuteReader();
         var list = new List<Rule>();
         while (r.Read()) list.Add(Map(r));
@@ -93,20 +95,20 @@ public sealed class RuleStore(ControlDatabase db)
 
     public void SetLastFired(string id, DateTimeOffset now)
     {
-        Exec("UPDATE rules SET last_fired_utc = $now WHERE id = $id;", ("$now", now.Ms()), ("$id", id));
+        Exec("UPDATE rules SET last_fired_utc = @now WHERE id = @id;", ("@now", now.Ms()), ("@id", id));
     }
 
     public void SetEnabled(string id, bool enabled)
     {
-        Exec("UPDATE rules SET is_enabled = $en, auto_disabled_reason = NULL WHERE id = $id;",
-            ("$en", enabled ? 1 : 0), ("$id", id));
+        Exec("UPDATE rules SET is_enabled = @en, auto_disabled_reason = NULL WHERE id = @id;",
+            ("@en", enabled ? 1 : 0), ("@id", id));
     }
 
     /// <summary>Auto-disable a rule that blew its hourly fire cap (SPEC §10.7).</summary>
     public void AutoDisable(string id, string reason)
     {
-        Exec("UPDATE rules SET is_enabled = 0, auto_disabled_reason = $reason WHERE id = $id;",
-            ("$reason", reason), ("$id", id));
+        Exec("UPDATE rules SET is_enabled = 0, auto_disabled_reason = @reason WHERE id = @id;",
+            ("@reason", reason), ("@id", id));
     }
 
     private void Exec(string sql, params (string, object?)[] ps)
@@ -118,23 +120,23 @@ public sealed class RuleStore(ControlDatabase db)
         cmd.ExecuteNonQuery();
     }
 
-    internal static Rule Map(SqliteDataReader r) => new()
+    internal static Rule Map(DbDataReader r) => new()
     {
         Id = r.GetString(r.GetOrdinal("id")),
         Name = r.GetString(r.GetOrdinal("name")),
         AppId = r.Str("app_id"),
         Filter = r.Str("filter"),
-        MinimumLevel = (LogLevel)r.GetInt32(r.GetOrdinal("minimum_level")),
-        TriggerType = (TriggerType)r.GetInt32(r.GetOrdinal("trigger_type")),
+        MinimumLevel = (LogLevel)r.Int32("minimum_level"),
+        TriggerType = (TriggerType)r.Int32("trigger_type"),
         ThresholdCount = r.IntNull("threshold_count"),
         ThresholdWindowMinutes = r.IntNull("threshold_window_minutes"),
         DedupeKeyTemplate = r.GetString(r.GetOrdinal("dedupe_key_template")),
-        CooldownMinutes = r.GetInt32(r.GetOrdinal("cooldown_minutes")),
+        CooldownMinutes = r.Int32("cooldown_minutes"),
         DestinationId = r.GetString(r.GetOrdinal("destination_id")),
         BodyTemplateOverride = r.Str("body_template_override"),
-        MaxFiresPerHour = r.GetInt32(r.GetOrdinal("max_fires_per_hour")),
-        IsDryRun = r.GetInt32(r.GetOrdinal("is_dry_run")) != 0,
-        IsEnabled = r.GetInt32(r.GetOrdinal("is_enabled")) != 0,
+        MaxFiresPerHour = r.Int32("max_fires_per_hour"),
+        IsDryRun = r.Bool("is_dry_run"),
+        IsEnabled = r.Bool("is_enabled"),
         AutoDisabledReason = r.Str("auto_disabled_reason"),
         LastFiredUtc = r.ReadTsNull("last_fired_utc"),
         CreatedUtc = r.ReadTs("created_utc"),

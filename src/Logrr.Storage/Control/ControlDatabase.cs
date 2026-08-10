@@ -1,55 +1,48 @@
-using Microsoft.Data.Sqlite;
+using System.Data.Common;
+using Logrr.Storage.Sql;
 
 namespace Logrr.Storage.Control;
 
 /// <summary>
-/// Owns <c>control.db</c>: connection factory + the versioned migration runner (SPEC §4.4).
+/// Owns the control store — <c>control.db</c> on the SQLite backend, the <c>logrr</c> schema on
+/// SQL Server: connection factory + the versioned migration runner (SPEC §4.4, §4.7).
 /// </summary>
 public sealed class ControlDatabase
 {
-    private readonly string _connectionString;
+    public ControlDatabase(SqlDialect dialect) => Dialect = dialect;
 
-    public ControlDatabase(StoragePaths paths)
+    /// <summary>Convenience for the default file-backed layout (and for tests).</summary>
+    public ControlDatabase(StoragePaths paths) : this(new SqliteDialect(paths))
     {
-        Paths = paths;
-        _connectionString = new SqliteConnectionStringBuilder
-        {
-            DataSource = paths.ControlDbPath,
-            Mode = SqliteOpenMode.ReadWriteCreate,
-            Pooling = true,
-        }.ToString();
     }
 
-    public StoragePaths Paths { get; }
+    public SqlDialect Dialect { get; }
 
     /// <summary>True before the first run — used to trigger bootstrap (SPEC §2).</summary>
-    public bool Exists() => File.Exists(Paths.ControlDbPath);
+    public bool Exists() => Dialect.ControlExists();
 
-    /// <summary>Open a pooled connection with pragmas applied.</summary>
-    public SqliteConnection Open()
-    {
-        var conn = new SqliteConnection(_connectionString);
-        conn.Open();
-        Sqlite.ApplyPragmas(conn);
-        return conn;
-    }
+    /// <summary>Open a connection, ready to use.</summary>
+    public DbConnection Open() => Dialect.OpenControl();
 
-    /// <summary>Create the data root and run any pending migrations.</summary>
+    /// <summary>Create the store if needed and run any pending migrations.</summary>
     public void Initialize()
     {
-        Paths.EnsureRootDirectories();
+        Dialect.EnsureControlCreated();
+
         using var conn = Open();
-        var current = Sqlite.GetUserVersion(conn);
-        for (var v = current; v < ControlSchema.Migrations.Count; v++)
+        var migrations = Dialect.ControlMigrations;
+        var current = Dialect.GetSchemaVersion(conn);
+        for (var v = current; v < migrations.Count; v++)
         {
-            using var tx = conn.BeginTransaction();
+            using (var tx = conn.BeginTransaction())
             using (var cmd = conn.CreateCommand())
             {
-                cmd.CommandText = ControlSchema.Migrations[(int)v];
+                cmd.Transaction = tx;
+                cmd.CommandText = migrations[(int)v];
                 cmd.ExecuteNonQuery();
+                tx.Commit();
             }
-            tx.Commit();
-            Sqlite.SetUserVersion(conn, v + 1);
+            Dialect.SetSchemaVersion(conn, v + 1);
         }
     }
 }

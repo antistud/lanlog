@@ -10,8 +10,10 @@ using Logrr.Server.Ingest;
 using Logrr.Server.Query;
 using Logrr.Server.Realtime;
 using Logrr.Server.Security;
+using Logrr.Server.WindowsEvents;
 using Logrr.Storage;
 using Logrr.Storage.Control;
+using Logrr.Storage.Sql;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.Negotiate;
 using Microsoft.AspNetCore.Cors.Infrastructure;
@@ -72,6 +74,10 @@ builder.Services.Configure<ServerOptions>(o =>
 var storageOptions = new StorageOptions
 {
     DataPath = dataPath,
+    // Empty keeps everything in SQLite files under the data path; set it and both the control
+    // tables and the event partitions move into SQL Server instead (SPEC §4.7).
+    ConnectionString = StorageConnection.Resolve(builder.Configuration),
+    Schema = cfgRoot.GetValue("Storage:Schema", "logrr")!,
     MinFreeDiskMb = cfgRoot.GetValue("Storage:MinFreeDiskMb", 5120L),
     ChannelCapacity = cfgRoot.GetValue("Ingest:ChannelCapacity", 20_000),
     BatchSize = cfgRoot.GetValue("Ingest:BatchSize", 500),
@@ -113,11 +119,18 @@ Func<DateTimeOffset> clock = () => DateTimeOffset.UtcNow;
 builder.Services.AddSingleton(clock);
 
 // ---- Storage ----
+// One dialect object decides where everything lands; the stores and readers above it are
+// backend-agnostic. Resolved once here so a bad connection string fails at startup, in the
+// console and the internal log, rather than on the first ingest request.
+var dialect = SqlDialect.Create(storageOptions, paths);
+
 builder.Services.AddSingleton(paths);
-builder.Services.AddSingleton<ControlDatabase>();
-builder.Services.AddSingleton<PartitionManager>();
+builder.Services.AddSingleton(dialect);
+builder.Services.AddSingleton(sp => new ControlDatabase(sp.GetRequiredService<SqlDialect>()));
+builder.Services.AddSingleton(sp => new PartitionManager(sp.GetRequiredService<SqlDialect>()));
 builder.Services.AddSingleton<AppStore>();
 builder.Services.AddSingleton<TokenStore>();
+builder.Services.AddSingleton<WinlogCursorStore>();
 builder.Services.AddSingleton<UserStore>();
 builder.Services.AddSingleton<SavedSearchStore>();
 builder.Services.AddSingleton<AckStore>();
@@ -189,6 +202,7 @@ var windowsAuth = new WindowsAuthOptions
     AutoSignIn = cfgRoot.GetValue("Auth:Windows:AutoSignIn", true),
 };
 builder.Services.AddSingleton(windowsAuth);
+builder.Services.AddScoped<WindowsAuthDiagnostics>();
 
 // The cookie stays the one and only session mechanism. Windows auth is a *sign-in route*, not a
 // second way to be authenticated: /auth/windows challenges Negotiate, maps the Windows identity
@@ -240,7 +254,28 @@ builder.Services.AddHostedService<DispatcherService>();
 builder.Services.AddHostedService<RetentionService>();
 builder.Services.AddHostedService<IngestDrainService>();
 
+// ---- Agentless Windows Event Log collection (SPEC §6.4) ----
+// The server reads the event log itself, locally or over RPC, so the collected machines need
+// nothing installed - which is the "no agent" promise in SPEC §1 taken literally.
+var windowsEvents = cfgRoot.GetSection("WindowsEvents").Get<WindowsEventOptions>() ?? new WindowsEventOptions();
+builder.Services.AddSingleton(windowsEvents);
+if (windowsEvents.Enabled && windowsEvents.Sources.Count > 0)
+{
+    if (OperatingSystem.IsWindows())
+    {
+        WindowsEventRegistration.Add(builder.Services);
+    }
+    else
+    {
+        builder.Services.AddHostedService<WindowsEventUnavailableService>();
+    }
+}
+
 var app = builder.Build();
+
+// Which backend is live is the first thing you want to know from a support log — it explains
+// where the data went and which half of the setup guide applies.
+app.Logger.LogInformation("Logrr storage backend: {Backend}", dialect.Describe());
 
 // First-run bootstrap before serving.
 using (var scope = app.Services.CreateScope())
@@ -265,6 +300,31 @@ app.MapHub<TailHub>("/hubs/tail");
 app.MapRazorComponents<App>().AddInteractiveServerRenderMode();
 
 app.Run();
+
+/// <summary>
+/// SQL Server connection-string resolution (SPEC §4.7). Same precedence as the data path:
+/// environment first, so a deployment can point at a different database without editing the
+/// published <c>appsettings.json</c>. An empty result means "stay on SQLite".
+/// </summary>
+internal static class StorageConnection
+{
+    public static string Resolve(IConfiguration config)
+    {
+        var env = Environment.GetEnvironmentVariable("LOGRR_SQL_CONNECTION");
+        if (!string.IsNullOrWhiteSpace(env))
+        {
+            return env;
+        }
+        var configured = config["Logrr:Storage:ConnectionString"];
+        if (!string.IsNullOrWhiteSpace(configured))
+        {
+            return configured;
+        }
+        // Also honour the conventional slot, so a shop that keeps every connection string in
+        // ConnectionStrings does not have to make an exception for this one.
+        return config.GetConnectionString("Logrr") ?? "";
+    }
+}
 
 /// <summary>Data root resolution per SPEC §2.</summary>
 internal static class DataPath

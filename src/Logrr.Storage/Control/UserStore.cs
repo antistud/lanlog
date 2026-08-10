@@ -1,4 +1,5 @@
-using Microsoft.Data.Sqlite;
+using System.Data.Common;
+using Logrr.Storage.Sql;
 
 namespace Logrr.Storage.Control;
 
@@ -12,7 +13,7 @@ public sealed class UserStore(ControlDatabase db)
         cmd.CommandText = """
             INSERT INTO users (id, username, password_hash, password_salt, windows_account, role,
                                must_change_password, app_access, created_utc)
-            VALUES ($id, $username, $hash, $salt, $win, $role, $must, $access, $created);
+            VALUES (@id, @username, @hash, @salt, @win, @role, @must, @access, @created);
             """;
         Bind(cmd, user);
         cmd.ExecuteNonQuery();
@@ -22,8 +23,8 @@ public sealed class UserStore(ControlDatabase db)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT * FROM users WHERE username = $u;";
-        cmd.Add("$u", username);
+        cmd.CommandText = "SELECT * FROM users WHERE username = @u;";
+        cmd.Add("@u", username);
         using var reader = cmd.ExecuteReader();
         return reader.Read() ? Map(reader) : null;
     }
@@ -41,8 +42,9 @@ public sealed class UserStore(ControlDatabase db)
         }
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT * FROM users WHERE windows_account = $w COLLATE NOCASE;";
-        cmd.Add("$w", windowsAccount.Trim());
+        cmd.CommandText =
+            $"SELECT * FROM users WHERE {db.Dialect.CaseInsensitiveEquals("windows_account", "@w")};";
+        cmd.Add("@w", windowsAccount.Trim());
         using var reader = cmd.ExecuteReader();
         return reader.Read() ? Map(reader) : null;
     }
@@ -64,17 +66,15 @@ public sealed class UserStore(ControlDatabase db)
     public bool AnyExist()
     {
         using var conn = db.Open();
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT EXISTS(SELECT 1 FROM users);";
-        return Convert.ToInt64(cmd.ExecuteScalar()) != 0;
+        return Db.Scalar(conn, db.Dialect.AnyRowsScalar("users")) != 0;
     }
 
     public void Delete(string id)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "DELETE FROM users WHERE id = $id;";
-        cmd.Add("$id", id);
+        cmd.CommandText = "DELETE FROM users WHERE id = @id;";
+        cmd.Add("@id", id);
         cmd.ExecuteNonQuery();
     }
 
@@ -83,14 +83,14 @@ public sealed class UserStore(ControlDatabase db)
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            UPDATE users SET password_hash = $hash, password_salt = $salt,
-                             must_change_password = $must
-            WHERE id = $id;
+            UPDATE users SET password_hash = @hash, password_salt = @salt,
+                             must_change_password = @must
+            WHERE id = @id;
             """;
-        cmd.Add("$hash", hash);
-        cmd.Add("$salt", salt);
-        cmd.Add("$must", mustChange ? 1 : 0);
-        cmd.Add("$id", id);
+        cmd.Add("@hash", hash);
+        cmd.Add("@salt", salt);
+        cmd.Add("@must", mustChange ? 1 : 0);
+        cmd.Add("@id", id);
         cmd.ExecuteNonQuery();
     }
 
@@ -108,38 +108,38 @@ public sealed class UserStore(ControlDatabase db)
 
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "UPDATE users SET windows_account = $w WHERE id = $id;";
-        cmd.Add("$w", (object?)normalized);
-        cmd.Add("$id", id);
+        cmd.CommandText = "UPDATE users SET windows_account = @w WHERE id = @id;";
+        cmd.Add("@w", (object?)normalized);
+        cmd.Add("@id", id);
         cmd.ExecuteNonQuery();
         return true;
     }
 
-    private static void Bind(SqliteCommand cmd, UserRecord u)
+    private static void Bind(DbCommand cmd, UserRecord u)
     {
-        cmd.Add("$id", u.Id);
-        cmd.Add("$username", u.Username);
-        cmd.Add("$hash", (object?)u.PasswordHash);
-        cmd.Add("$salt", (object?)u.PasswordSalt);
-        cmd.Add("$win", (object?)(string.IsNullOrWhiteSpace(u.WindowsAccount) ? null : u.WindowsAccount.Trim()));
-        cmd.Add("$role", (int)u.Role);
-        cmd.Add("$must", u.MustChangePassword ? 1 : 0);
-        cmd.Add("$access", u.AppAccess is null ? null : System.Text.Json.JsonSerializer.Serialize(u.AppAccess));
-        cmd.Add("$created", u.CreatedUtc.ToUnixTimeMilliseconds());
+        cmd.Add("@id", u.Id);
+        cmd.Add("@username", u.Username);
+        cmd.Add("@hash", (object?)u.PasswordHash);
+        cmd.Add("@salt", (object?)u.PasswordSalt);
+        cmd.Add("@win", (object?)(string.IsNullOrWhiteSpace(u.WindowsAccount) ? null : u.WindowsAccount.Trim()));
+        cmd.Add("@role", (int)u.Role);
+        cmd.Add("@must", u.MustChangePassword ? 1 : 0);
+        cmd.Add("@access", u.AppAccess is null ? null : System.Text.Json.JsonSerializer.Serialize(u.AppAccess));
+        cmd.Add("@created", u.CreatedUtc.ToUnixTimeMilliseconds());
     }
 
-    private static UserRecord Map(SqliteDataReader r) => new()
+    private static UserRecord Map(DbDataReader r) => new()
     {
         Id = r.GetString(r.GetOrdinal("id")),
         Username = r.GetString(r.GetOrdinal("username")),
-        PasswordHash = r.IsDBNull(r.GetOrdinal("password_hash")) ? null : (byte[])r["password_hash"],
-        PasswordSalt = r.IsDBNull(r.GetOrdinal("password_salt")) ? null : (byte[])r["password_salt"],
-        WindowsAccount = r.IsDBNull(r.GetOrdinal("windows_account")) ? null : r.GetString(r.GetOrdinal("windows_account")),
-        Role = (UserRole)r.GetInt32(r.GetOrdinal("role")),
-        MustChangePassword = r.GetInt32(r.GetOrdinal("must_change_password")) != 0,
+        PasswordHash = r.Bytes("password_hash"),
+        PasswordSalt = r.Bytes("password_salt"),
+        WindowsAccount = r.Str("windows_account"),
+        Role = (UserRole)r.Int32("role"),
+        MustChangePassword = r.Bool("must_change_password"),
         AppAccess = r.IsDBNull(r.GetOrdinal("app_access"))
             ? null
             : AppStore.ReadStringList(r, "app_access"),
-        CreatedUtc = DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64(r.GetOrdinal("created_utc"))),
+        CreatedUtc = DateTimeOffset.FromUnixTimeMilliseconds(r.Int64("created_utc")),
     };
 }

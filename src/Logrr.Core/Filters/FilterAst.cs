@@ -17,10 +17,12 @@ internal readonly record struct FilterValue(ValueKind Kind, object Raw)
 }
 
 /// <summary>Accumulates SQL text and ordered parameters for the query backend.</summary>
-internal sealed class SqlBuilder
+internal sealed class SqlBuilder(FilterSqlDialect dialect)
 {
     private readonly StringBuilder _sql = new();
     private readonly List<object?> _params = [];
+
+    public FilterSqlDialect Dialect { get; } = dialect;
 
     public void Append(string text) => _sql.Append(text);
 
@@ -126,9 +128,23 @@ internal sealed class NotNode(FilterNode inner) : FilterNode
 /// <summary>A single <c>ident op value</c> (or null test) comparison.</summary>
 internal sealed class ComparisonNode(string ident, CompareOp op, FilterValue? value) : FilterNode
 {
+    /// <summary>
+    /// Ordinal collation for SQL Server comparisons. <c>Compile()</c> compares strings with
+    /// <see cref="string.CompareOrdinal(string,string)"/>, and SQL Server's default database
+    /// collation is case- and accent-insensitive, so without this a filter would match rows in
+    /// search that the live-stream predicate rejects.
+    /// </summary>
+    private const string OrdinalCollation = "COLLATE Latin1_General_BIN2";
+
+    /// <summary>
+    /// Case-insensitive collation for SQL Server <c>LIKE</c>, matching SQLite's default
+    /// <c>LIKE</c> and the case-insensitive regex <see cref="LikeMatch"/> uses.
+    /// </summary>
+    private const string LikeCollation = "COLLATE Latin1_General_CI_AS";
+
     public override void ToSql(SqlBuilder b)
     {
-        var col = SqlColumn(ident);
+        var col = SqlColumn(ident, b.Dialect);
         switch (op)
         {
             case CompareOp.IsNull:
@@ -139,27 +155,86 @@ internal sealed class ComparisonNode(string ident, CompareOp op, FilterValue? va
                 return;
         }
 
-        var v = value!.Value;
-        var opText = op switch
+        if (b.Dialect == FilterSqlDialect.SqlServer)
         {
-            CompareOp.Eq => "=",
-            CompareOp.Neq => "!=",
-            CompareOp.Gt => ">",
-            CompareOp.Gte => ">=",
-            CompareOp.Lt => "<",
-            CompareOp.Lte => "<=",
-            CompareOp.Like => "LIKE",
-            _ => throw new InvalidOperationException(),
-        };
+            AppendSqlServer(b, col);
+            return;
+        }
 
+        var v = value!.Value;
         object? param = v.Kind switch
         {
             ValueKind.Number => v.AsNumber,
             ValueKind.Bool => v.AsBool ? 1 : 0,
             _ => v.AsString,
         };
-        b.Append($"{col} {opText} {b.AddParam(param)}");
+        b.Append($"{col} {OpText(op)} {b.AddParam(param)}");
     }
+
+    /// <summary>
+    /// SQL Server has no equivalent of SQLite's "compare whatever type is in the cell" rule,
+    /// so each comparison states the type it wants. <c>JSON_VALUE</c> always yields nvarchar,
+    /// and so do all the built-in columns except <c>level</c>; the emitted expression converts
+    /// explicitly to whatever the right-hand literal is, which is also what <c>Compile()</c>
+    /// does in memory.
+    /// </summary>
+    private void AppendSqlServer(SqlBuilder b, string col)
+    {
+        var v = value!.Value;
+        var isNumericColumn = IsNumericColumn(ident);
+
+        if (op == CompareOp.Like)
+        {
+            var text = isNumericColumn ? $"CAST({col} AS NVARCHAR(4000))" : col;
+            b.Append($"{text} {LikeCollation} LIKE {b.AddParam(EscapeLikePattern(v.AsString))}");
+            return;
+        }
+
+        if (v.Kind == ValueKind.Number)
+        {
+            if (isNumericColumn)
+            {
+                b.Append($"{col} {OpText(op)} {b.AddParam(v.AsNumber)}");
+                return;
+            }
+
+            // A text cell compared against a number. TRY_CAST turns "not a number" into NULL,
+            // which makes every operator unknown — matching Compile(), which treats a type
+            // mismatch as no-match. The one exception is "!=", which Compile() reports as TRUE
+            // on a mismatch (1042 really is different from 'eu'), so say that explicitly.
+            var number = $"TRY_CAST({col} AS FLOAT)";
+            var p = b.AddParam(v.AsNumber);
+            b.Append(op == CompareOp.Neq
+                ? $"({number} != {p} OR ({col} IS NOT NULL AND {number} IS NULL))"
+                : $"{number} {OpText(op)} {p}");
+            return;
+        }
+
+        // Strings and bools both compare as text: JSON_VALUE renders a JSON true as 'true',
+        // and Compile() compares bools through their invariant string form too.
+        var lhs = isNumericColumn ? $"CAST({col} AS NVARCHAR(4000))" : col;
+        var literal = v.Kind == ValueKind.Bool ? (v.AsBool ? "true" : "false") : v.AsString;
+        b.Append($"{lhs} {OrdinalCollation} {OpText(op)} {b.AddParam(literal)}");
+    }
+
+    private static string OpText(CompareOp op) => op switch
+    {
+        CompareOp.Eq => "=",
+        CompareOp.Neq => "!=",
+        CompareOp.Gt => ">",
+        CompareOp.Gte => ">=",
+        CompareOp.Lt => "<",
+        CompareOp.Lte => "<=",
+        CompareOp.Like => "LIKE",
+        _ => throw new InvalidOperationException(),
+    };
+
+    /// <summary>
+    /// SQL Server's <c>LIKE</c> reads <c>[...]</c> as a character class; SQLite's does not, and
+    /// neither does <see cref="LikeMatch"/>. Neutralise it so the same pattern means the same
+    /// thing on both backends. <c>%</c> and <c>_</c> are wildcards everywhere and stay as-is.
+    /// </summary>
+    private static string EscapeLikePattern(string pattern) => pattern.Replace("[", "[[]");
 
     public override bool? Evaluate(LogEvent e)
     {
@@ -176,11 +251,11 @@ internal sealed class ComparisonNode(string ident, CompareOp op, FilterValue? va
         }
     }
 
-    private static string SqlColumn(string ident)
+    private static string SqlColumn(string ident, FilterSqlDialect dialect)
     {
         if (FilterIdent.IsProperty(ident))
         {
-            return $"json_extract(properties, '$.{FilterIdent.PropertyName(ident)}')";
+            return JsonAccess(FilterIdent.PropertyName(ident), dialect);
         }
         return ident switch
         {
@@ -191,9 +266,22 @@ internal sealed class ComparisonNode(string ident, CompareOp op, FilterValue? va
             "TraceId" => "trace_id",
             "SpanId" => "span_id",
             "Machine" => "machine",
-            _ => $"json_extract(properties, '$.{ident}')",
+            _ => JsonAccess(ident, dialect),
         };
     }
+
+    private static string JsonAccess(string property, FilterSqlDialect dialect) =>
+        dialect == FilterSqlDialect.SqlServer
+            ? $"JSON_VALUE(properties, '$.{property}')"
+            : $"json_extract(properties, '$.{property}')";
+
+    /// <summary>
+    /// Whether the identifier's SQL expression is numeric. Only <c>level</c> is; every other
+    /// built-in column is text, and a property read out of JSON is text on SQL Server whatever
+    /// the JSON type was.
+    /// </summary>
+    private static bool IsNumericColumn(string ident) =>
+        !FilterIdent.IsProperty(ident) && ident == "Level";
 
     private static bool Compare(object actual, CompareOp op, FilterValue expected)
     {

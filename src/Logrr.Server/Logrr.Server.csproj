@@ -7,6 +7,9 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- System.Diagnostics.Eventing.Reader (the Windows Event Log collector, SPEC §6.4) needs no
+         PackageReference: the ASP.NET Core shared framework already carries
+         System.Diagnostics.EventLog, and adding it explicitly only earns NU1510. -->
     <PackageReference Include="Microsoft.AspNetCore.Authentication.Negotiate" />
     <PackageReference Include="Serilog.AspNetCore" />
     <PackageReference Include="Serilog.Sinks.File" />

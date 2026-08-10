@@ -155,13 +155,69 @@ out. Signing out lands there too, otherwise "sign out" would immediately sign yo
   browser's Local intranet zone. Use the server's short hostname, not an IP or an external
   FQDN, or add the site to that zone.
 
-## 9. Backup
+## 9. Windows Event Log collection (optional)
+
+Pulls the Application/System/Security logs from this box and any other Windows machine on the
+LAN into Logrr. **Nothing is installed on the collected machines** — the server reads their
+event logs over RPC (SPEC §6.4).
+
+**a. Turn it on** (`appsettings.json`). One entry per machine; `.` means this server:
+
+```json
+"Logrr": {
+  "WindowsEvents": {
+    "Enabled": true,
+    "PollIntervalSeconds": 60,
+    "Sources": [
+      { "Machine": ".",     "AppId": "windows-logrr", "Channels": ["Application", "System"] },
+      { "Machine": "WEB01", "AppId": "windows-web01", "Channels": ["Application", "System"],
+        "MinimumLevel": "Warning" }
+    ]
+  }
+}
+```
+
+Each `AppId` is created automatically on first poll (slug: `[a-z0-9-]{3,32}`), defaulting to a
+**Warning** floor because Application and System are chatty at Information. Change it in
+Admin → Apps afterwards; the collector reads that setting back and stops pulling below it.
+
+**b. Give the app pool an identity that can read the logs.** This is the step that catches
+people out. `ApplicationPoolIdentity` is a *local* account and cannot authenticate to another
+machine, so remote collection needs a real domain account:
+
+- Set the app pool identity to a domain service account (Application Pools → Logrr →
+  Advanced Settings → Identity), then redo the `keys\` and data-folder permissions from §5 for
+  that account.
+- On **each collected machine**, add that account to the local **Event Log Readers** group
+  (`net localgroup "Event Log Readers" CONTOSO\svc_logrr /add`), or do it once via Group Policy
+  for the whole fleet.
+- The **Security** channel needs more than Event Log Readers on most builds — grant it
+  explicitly or leave that channel out.
+- Local-only collection (`"Machine": "."`) needs none of this; `ApplicationPoolIdentity` can
+  read Application and System already.
+
+**c. Firewall.** Remote reads use RPC — enable the **Remote Event Log Management** inbound
+rules on the collected machines (`netsh advfirewall firewall set rule group="Remote Event Log
+Management" new enable=yes`).
+
+### What to expect
+
+Collection starts at the **tail** of each log: only events written from then on appear. Set
+`InitialBackfillHours` to pull recent history instead (max 720 — ingest rejects anything older
+than 30 days).
+
+Watch `logrr-internal.log` on the first poll. `Windows event collection starting at the tail
+of …` means it is working. A warning naming a machine and channel means it could not read that
+one — almost always (b) or (c) above; it retries every poll and logs again once it recovers,
+and the other machines keep collecting meanwhile.
+
+## 10. Backup
 
 Copy any partition file that isn't today's, plus `control.db` and the **`keys\`** folder.
 **If `keys\` is lost, destination webhook secrets are unrecoverable** (SPEC §11, §13).
 For the live partition, use `sqlite3 .backup`.
 
-## 10. Upgrade
+## 11. Upgrade
 
 Publish to a new `logrr_{build}` folder, repoint the site's physical path, recycle, and
 delete the previous folder on the next deploy. The data directory is untouched.

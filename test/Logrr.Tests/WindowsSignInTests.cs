@@ -282,6 +282,46 @@ public class WindowsSignInRoutingTests
     }
 
     [Fact]
+    public async Task The_diagnostics_name_the_setting_when_the_feature_is_off()
+    {
+        var path = TempPath();
+        using var factory = Factory(path, windowsAuth: false);
+        try
+        {
+            var html = await NoRedirects(factory).GetStringAsync("/login?local=1&diag=1");
+
+            // The state that looks like nothing happening at all: no button, no redirect, no clue.
+            Assert.Contains("Windows sign-in is turned off on this server", html);
+            Assert.Contains("Logrr:Auth:Windows:Enabled", html);
+        }
+        finally { Cleanup(factory, path); }
+    }
+
+    [Fact]
+    public async Task A_refused_test_returns_to_the_diagnostics_carrying_the_identity_it_saw()
+    {
+        var path = TempPath();
+        using var factory = Factory(path, windowsAuth: true);
+        try
+        {
+            var client = AsWindowsUser(factory, @"CONTOSO\contractor"); // linked to nothing
+
+            var resp = await client.GetAsync("/auth/windows?diag=1&returnUrl=%2F");
+            var location = PathAndQuery(resp);
+
+            // Without diag=1 surviving the refusal, the one action that reports the identity
+            // would land on a page that cannot show it.
+            Assert.Contains("diag=1", location);
+            Assert.Contains($"account={Uri.EscapeDataString(@"CONTOSO\contractor")}", location);
+
+            var html = await client.GetStringAsync(location);
+            Assert.Contains("A Windows sign-in was just refused", html);
+            Assert.Contains(@"CONTOSO\contractor", html);
+        }
+        finally { Cleanup(factory, path); }
+    }
+
+    [Fact]
     public async Task Signing_out_does_not_hand_the_browser_straight_back_through_the_handshake()
     {
         var path = TempPath();

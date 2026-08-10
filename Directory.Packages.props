@@ -14,6 +14,9 @@
     <PackageVersion Include="SQLitePCLRaw.lib.e_sqlite3" Version="2.1.12" />
     <PackageVersion Include="SQLitePCLRaw.provider.e_sqlite3" Version="2.1.12" />
     <PackageVersion Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.12" />
+    <!-- Optional SQL Server backend (SPEC §4.7). Referenced unconditionally so one build
+         serves both backends; nothing connects unless Logrr:Storage:ConnectionString is set. -->
+    <PackageVersion Include="Microsoft.Data.SqlClient" Version="7.0.2" />
     <PackageVersion Include="System.IO.Hashing" Version="10.0.0" />
     <PackageVersion Include="MailKit" Version="4.13.0" />
     <!-- Logrr.Client (netstandard2.0) dependencies.
