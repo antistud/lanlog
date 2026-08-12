@@ -3,7 +3,8 @@
 @rendermode InteractiveServer
 @implements IDisposable
 @using Logrr.Server.WindowsEvents
-@inject Logrr.Server.WindowsEvents.WindowsEventOptions Options
+@using Logrr.Storage.Control
+@inject Logrr.Server.WindowsEvents.WindowsEventSettings Winlog
 @inject IServiceProvider Services
 
 <PageTitle>Windows events — Logrr</PageTitle>
@@ -13,7 +14,7 @@
         <h1>Windows events</h1>
         <div class="sub">Agentless Event Log collection — the server reads these machines, nothing is installed on them.</div>
     </div>
-    @if (_collector is not null)
+    @if (_collector is not null && _enabled && _sources.Any(s => s.IsEnabled))
     {
         <button class="btn ghost" disabled="@_busy" @onclick="CollectNow">
             @(_busy ? "Collecting…" : "↻ Collect now")
@@ -21,35 +22,105 @@
     }
 </div>
 
-@if (!Options.Enabled)
+@if (_collector is null)
 {
-    <div class="card">
-        <EmptyState Glyph="◫" Title="Collection is off">
-            Set <code>Logrr:WindowsEvents:Enabled</code> and list the machines to read, then restart.
-            Each machine's events land in their own app, grouped one event type per Windows event id.
-            <pre class="code" style="text-align:left; margin-top:var(--sp-3)">@ConfigSample</pre>
-            Permissions and firewall setup are in <code>docs/SETUP.md</code> §9.
-        </EmptyState>
+    <div class="badge warn mb-4">
+        This server is not running on Windows, so the Event Log cannot be read. Settings below can
+        still be edited — they take effect if Logrr is moved to a Windows host.
     </div>
 }
-else if (_collector is null)
-{
-    <div class="card">
-        <EmptyState Glyph="⚠" Title="Not available on this host">
-            Collection is enabled in configuration but this server is not running on Windows,
-            so the Event Log cannot be read. The setting is ignored.
-        </EmptyState>
+
+<div class="card">
+    <div class="card-head">
+        <div>
+            <h3>Collection</h3>
+            <div class="meta">Applies immediately — no restart, and no <code>appsettings.json</code>.</div>
+        </div>
+        <div class="flex gap-2 items-center">
+            @if (_saved) { <span class="badge good">Saved</span> }
+            <button class="btn primary sm" @onclick="SaveSettings">Save changes</button>
+        </div>
     </div>
-}
-else if (Options.Sources.Count == 0)
-{
-    <div class="card">
-        <EmptyState Glyph="◫" Title="No machines configured">
-            Collection is on, but <code>Logrr:WindowsEvents:Sources</code> is empty — there is nothing to read.
-        </EmptyState>
+
+    <div class="field">
+        <label class="flex gap-2 items-center" style="cursor:pointer">
+            <input type="checkbox" @bind="_enabled" /> Collect Windows events
+        </label>
+        <span class="hint">When off, nothing is polled and the machines below are left alone.</span>
     </div>
-}
-else
+
+    <div class="grid cols-4">
+        <div class="field">
+            <label>Poll interval (s)</label>
+            <input class="input" type="number" @bind="_pollSeconds" />
+            <span class="hint">@WindowsEventValidation.MinPollIntervalSeconds–@WindowsEventValidation.MaxPollIntervalSeconds. This is the collection latency.</span>
+        </div>
+        <div class="field">
+            <label>Initial backfill (h)</label>
+            <input class="input" type="number" @bind="_backfillHours" />
+            <span class="hint">0 starts at the tail. Max @WindowsEventOptions.MaxInitialBackfillHours.</span>
+        </div>
+        <div class="field">
+            <label>Events per read</label>
+            <input class="input" type="number" @bind="_maxEvents" />
+            <span class="hint">Batch size per query.</span>
+        </div>
+        <div class="field">
+            <label>Reads per poll</label>
+            <input class="input" type="number" @bind="_maxBatches" />
+            <span class="hint">Caps how far one tick chases a backlog.</span>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-head">
+        <div>
+            <h3>Machines</h3>
+            <div class="meta">One entry per machine. Each machine's events land in their own app, grouped one event type per Windows event id.</div>
+        </div>
+        <button class="btn primary sm" @onclick="() => OpenSource(null)">＋ Add machine</button>
+    </div>
+
+    @if (_sources.Count == 0)
+    {
+        <EmptyState Glyph="◫" Title="No machines yet">
+            Add this server with <code>.</code> as the machine name, or any Windows box on the LAN
+            by name. Permissions and firewall setup are in <code>docs/SETUP.md</code> §9.
+        </EmptyState>
+    }
+    else
+    {
+        <div class="table-wrap" style="border:none">
+            <table class="data">
+                <thead>
+                    <tr><th>Machine</th><th>App</th><th>Channels</th><th>Created floor</th><th>State</th><th></th></tr>
+                </thead>
+                <tbody>
+                    @foreach (var s in _sources)
+                    {
+                        <tr>
+                            <td><strong>@s.Machine</strong>@if (s.Machine == ".") { <span class="meta" style="margin-left:6px">(this server)</span> }</td>
+                            <td><a href="@($"/apps/{s.AppId}/search")">@s.AppId</a></td>
+                            <td class="meta">@string.Join(", ", Channels(s))</td>
+                            <td class="meta">@(s.MinimumLevel?.ToString() ?? "Warning")</td>
+                            <td>
+                                @if (s.IsEnabled) { <span class="badge accent">Collecting</span> }
+                                else { <span class="badge">Paused</span> }
+                            </td>
+                            <td class="text-right nowrap">
+                                <button class="btn ghost sm" @onclick="() => OpenSource(s)">Edit</button>
+                                <button class="btn danger sm" @onclick="() => DeleteSource(s)">Remove</button>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</div>
+
+@if (_collector is not null && _enabled && _rows.Count > 0)
 {
     <div class="grid cols-4 mb-4">
         <StatTile Label="Machines" Value="@_machines.ToString()" Small="true" />
@@ -73,7 +144,7 @@ else
             <thead>
                 <tr>
                     <th>Machine</th><th>Channel</th><th>App</th><th>Status</th>
-                    <th class="text-right">Collected</th><th class="text-right">Record</th><th>Last read</th>
+                    <th class="text-right">Collected</th><th class="text-right">Record</th><th>Last read</th><th></th>
                 </tr>
             </thead>
             <tbody>
@@ -108,65 +179,111 @@ else
                         <td class="text-right">@r.EventsCollected.ToString("N0")</td>
                         <td class="text-right meta">@(r.LastRecordId?.ToString("N0") ?? "—")</td>
                         <td class="meta">@(r.LastSuccessUtc is { } s ? Ago(s) : "—")</td>
+                        <td class="text-right">
+                            <button class="btn ghost sm" title="Forget the high-water mark; the next poll starts again from the tail or the backfill window"
+                                    @onclick="() => ResetCursor(r)">Reset</button>
+                        </td>
                     </tr>
                     @if (r.IsFailing && r.LastError is not null)
                     {
                         <tr>
-                            <td colspan="7" class="meta" style="padding-top:0; color:var(--danger)">@r.LastError</td>
+                            <td colspan="8" class="meta" style="padding-top:0; color:var(--danger)">@r.LastError</td>
                         </tr>
                     }
                 }
             </tbody>
         </table>
     </div>
-
-    <div class="card">
-        <div class="card-head"><h3>How this works</h3></div>
-        <div class="meta" style="line-height:1.7">
-            Polling every @Options.PollIntervalSeconds s. Each channel keeps a high-water mark on its
-            <code>EventRecordID</code>, so a restart resumes exactly where it left off, and clearing a log
-            is detected and recovered from. Collection starts at the <strong>tail</strong> of each log —
-            @(Options.InitialBackfillHours > 0
-                ? $"except on first sight, where the last {Options.InitialBackfillHours}h are backfilled."
-                : "only events written from then on appear. Set InitialBackfillHours to pull history.")
-            Filtering is each app's own <strong>minimum level</strong>: it is pushed into the Event Log
-            query, so records below the floor are never read off the wire.
-        </div>
-    </div>
 }
+
+<div class="card">
+    <div class="card-head"><h3>How this works</h3></div>
+    <div class="meta" style="line-height:1.7">
+        Polling every @_pollSeconds s. Each channel keeps a high-water mark on its
+        <code>EventRecordID</code>, so a restart resumes exactly where it left off, and clearing a log
+        is detected and recovered from. Collection starts at the <strong>tail</strong> of each log —
+        @(_backfillHours > 0
+            ? $"except on first sight, where the last {_backfillHours}h are backfilled."
+            : "only events written from then on appear. Set an initial backfill to pull history.")
+        Filtering is each app's own <strong>minimum level</strong>: it is pushed into the Event Log
+        query, so records below the floor are never read off the wire. The floor below is only used
+        when the app is first created; change it afterwards in the app's own settings.
+    </div>
+</div>
+
+<Modal @bind-Open="_showSource" Title="@(_editId is null ? "Add machine" : "Edit machine")">
+    <ChildContent>
+        <div class="field">
+            <label>Machine</label>
+            <input class="input" placeholder="WEB01" @bind="_fMachine" />
+            <span class="hint">Name or FQDN, or <code>.</code> for this server. One entry per machine.</span>
+        </div>
+        <div class="field">
+            <label>App id</label>
+            <input class="input mono" placeholder="windows-web01" @bind="_fAppId" />
+            <span class="hint">Created automatically on the first poll. 3–32 characters: <code>a-z</code>, <code>0-9</code>, <code>-</code>.</span>
+        </div>
+        <div class="field">
+            <label>App name <span class="muted-2">(optional)</span></label>
+            <input class="input" placeholder="WEB01 event log" @bind="_fAppName" />
+        </div>
+        <div class="field">
+            <label>Channels</label>
+            <input class="input mono" placeholder="Application, System" @bind="_fChannels" />
+            <span class="hint">Comma-separated. Empty means Application and System. <code>Security</code> needs extra rights — see SETUP §9.</span>
+        </div>
+        <div class="grid cols-2">
+            <div class="field">
+                <label>Minimum level at creation</label>
+                <select class="input" @bind="_fLevel">
+                    @foreach (var l in Enum.GetValues<LogLevel>()) { <option value="@l">@l</option> }
+                </select>
+                <span class="hint">Seeds the new app only; afterwards its own setting governs.</span>
+            </div>
+            <div class="field">
+                <label class="flex gap-2 items-center" style="cursor:pointer; margin-top:26px">
+                    <input type="checkbox" @bind="_fEnabled" /> Collect from this machine
+                </label>
+            </div>
+        </div>
+        @if (_formErr is not null) { <div class="badge danger">@_formErr</div> }
+    </ChildContent>
+    <Footer>
+        <button class="btn ghost" @onclick="() => _showSource = false">Cancel</button>
+        <button class="btn primary" @onclick="SaveSource">@(_editId is null ? "Add machine" : "Save")</button>
+    </Footer>
+</Modal>
 
 @code {
     private WindowsEventCollector? _collector;
     private IReadOnlyList<WindowsEventTargetStatus> _rows = [];
+    private IReadOnlyList<WinlogSource> _sources = [];
     private int _machines, _failing;
     private long _total;
     private bool _busy;
     private CancellationTokenSource? _ticker;
 
-    private const string ConfigSample = """
-        "Logrr": {
-          "WindowsEvents": {
-            "Enabled": true,
-            "Sources": [
-              { "Machine": ".",     "AppId": "windows-logrr",
-                "Channels": ["Application", "System"] },
-              { "Machine": "WEB01", "AppId": "windows-web01",
-                "Channels": ["Application", "System"], "MinimumLevel": "Warning" }
-            ]
-          }
-        }
-        """;
+    // Settings form.
+    private bool _enabled, _saved;
+    private int _pollSeconds, _maxEvents, _maxBatches, _backfillHours;
+
+    // Machine form.
+    private bool _showSource, _fEnabled = true;
+    private string? _editId, _formErr;
+    private string _fMachine = "", _fAppId = "", _fAppName = "", _fChannels = "";
+    private LogLevel _fLevel = LogLevel.Warning;
 
     protected override void OnInitialized()
     {
-        // Registered only when collection is enabled on a Windows host, so its absence is
-        // exactly what distinguishes "off" from "on but unavailable here".
+        // Registered only on a Windows host, so its absence is exactly what distinguishes
+        // "collection is off" from "this box cannot collect at all".
         _collector = Services.GetService<WindowsEventCollector>();
+        LoadSettings();
         Refresh();
 
         // Collection happens on a background timer, so without this the page would silently go
-        // stale while you watch it. Polling the in-memory status is cheap; only the cursor read
-        // touches the control DB, and that is one small query per tick.
+        // stale while you watch it. Polling the in-memory status is cheap; the cursor and source
+        // reads touch the control DB, and those are two small queries per tick.
         if (_collector is not null)
         {
             _ticker = new CancellationTokenSource();
@@ -196,8 +313,19 @@ else
         _ticker?.Dispose();
     }
 
+    private void LoadSettings()
+    {
+        var s = Winlog.Settings();
+        _enabled = s.Enabled;
+        _pollSeconds = s.PollIntervalSeconds;
+        _maxEvents = s.MaxEventsPerPoll;
+        _maxBatches = s.MaxBatchesPerPoll;
+        _backfillHours = s.InitialBackfillHours;
+    }
+
     private void Refresh()
     {
+        _sources = Winlog.Sources();
         if (_collector is null)
         {
             return;
@@ -206,6 +334,78 @@ else
         _machines = _rows.Select(r => r.Machine).Distinct(StringComparer.OrdinalIgnoreCase).Count();
         _failing = _rows.Count(r => r.IsFailing);
         _total = _rows.Sum(r => r.EventsCollected);
+    }
+
+    private void SaveSettings()
+    {
+        Winlog.SaveSettings(new WinlogSettings
+        {
+            Enabled = _enabled,
+            PollIntervalSeconds = _pollSeconds,
+            MaxEventsPerPoll = _maxEvents,
+            MaxBatchesPerPoll = _maxBatches,
+            InitialBackfillHours = _backfillHours,
+        });
+        // Read back rather than trusting the form: the values are clamped on the way in, and
+        // showing the number that was rejected would be a lie about what the collector will do.
+        LoadSettings();
+        _saved = true;
+        Refresh();
+    }
+
+    private static IReadOnlyList<string> Channels(WinlogSource s) =>
+        new WindowsEventSourceOptions { Channels = s.Channels }.EffectiveChannels;
+
+    private void OpenSource(WinlogSource? s)
+    {
+        _formErr = null;
+        _editId = s?.Id;
+        _fMachine = s?.Machine ?? "";
+        _fAppId = s?.AppId ?? "";
+        _fAppName = s?.AppName ?? "";
+        _fChannels = s is null ? "" : string.Join(", ", s.Channels);
+        _fLevel = s?.MinimumLevel ?? LogLevel.Warning;
+        _fEnabled = s?.IsEnabled ?? true;
+        _showSource = true;
+    }
+
+    private void SaveSource()
+    {
+        var source = new WinlogSource
+        {
+            Id = _editId ?? Guid.NewGuid().ToString("N"),
+            Machine = _fMachine,
+            AppId = _fAppId,
+            AppName = string.IsNullOrWhiteSpace(_fAppName) ? null : _fAppName.Trim(),
+            Channels = WindowsEventValidation.ParseChannels(_fChannels),
+            MinimumLevel = _fLevel,
+            IsEnabled = _fEnabled,
+            CreatedUtc = DateTimeOffset.UtcNow,
+        };
+
+        _formErr = Winlog.SaveSource(source, isNew: _editId is null);
+        if (_formErr is not null)
+        {
+            return;
+        }
+        _showSource = false;
+        Refresh();
+    }
+
+    private void DeleteSource(WinlogSource s)
+    {
+        Winlog.DeleteSource(s.Id);
+        Refresh();
+    }
+
+    /// <summary>
+    /// Forget a channel's cursor. The recovery hatch when a cursor has run ahead of the log —
+    /// after a restore from backup, say — and collection has silently stopped as a result.
+    /// </summary>
+    private void ResetCursor(WindowsEventTargetStatus row)
+    {
+        Winlog.ResetCursor(row.ConfiguredMachine, row.Channel);
+        Refresh();
     }
 
     /// <summary>

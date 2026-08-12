@@ -190,5 +190,34 @@ public static class SqlServerControlSchema
           PRIMARY KEY (machine, channel)
         );
         """,
+
+        // v9 - Windows Event Log collection moves out of appsettings.json and into the control
+        // DB (SPEC section 6.4). As with v7, the case-insensitivity SQLite gets from COLLATE
+        // NOCASE on the index is carried by the column itself here.
+        $"""
+        CREATE TABLE [{schema}].[winlog_settings] (
+          id                     INT NOT NULL PRIMARY KEY,
+          enabled                BIT NOT NULL,
+          poll_interval_seconds  INT NOT NULL,
+          max_events_per_poll    INT NOT NULL,
+          max_batches_per_poll   INT NOT NULL,
+          initial_backfill_hours INT NOT NULL,
+          updated_utc            BIGINT NOT NULL
+        );
+
+        CREATE TABLE [{schema}].[winlog_sources] (
+          id            NVARCHAR(64) NOT NULL PRIMARY KEY,
+          machine       NVARCHAR(256) COLLATE Latin1_General_CI_AS NOT NULL,
+          app_id        NVARCHAR(64) NOT NULL,
+          app_name      NVARCHAR(256) NULL,
+          channels      NVARCHAR(MAX) NULL,
+          minimum_level INT NULL,
+          is_enabled    BIT NOT NULL,
+          created_utc   BIGINT NOT NULL
+        );
+
+        CREATE UNIQUE INDEX ux_winlog_sources_machine
+          ON [{schema}].[winlog_sources](machine);
+        """,
     ];
 }

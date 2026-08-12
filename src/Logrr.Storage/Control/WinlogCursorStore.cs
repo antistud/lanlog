@@ -77,5 +77,32 @@ public sealed class WinlogCursorStore(ControlDatabase db)
         cmd.ExecuteNonQuery();
     }
 
+    /// <summary>
+    /// Forget one channel's high-water mark, so the next poll seeds it again from the tail (or
+    /// the backfill window). The recovery hatch for a cursor that has run ahead of the log.
+    /// </summary>
+    public void Delete(string machine, string channel)
+    {
+        using var conn = db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = $"DELETE FROM {Table} WHERE machine = @m AND channel = @c;";
+        cmd.Add("@m", Key(machine));
+        cmd.Add("@c", Key(channel));
+        cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// Forget every channel of a machine. Used when a machine is removed from collection, so a
+    /// row re-added later starts cleanly rather than resuming a cursor from months ago.
+    /// </summary>
+    public void DeleteForMachine(string machine)
+    {
+        using var conn = db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = $"DELETE FROM {Table} WHERE machine = @m;";
+        cmd.Add("@m", Key(machine));
+        cmd.ExecuteNonQuery();
+    }
+
     private static string Key(string value) => value.Trim().ToLowerInvariant();
 }

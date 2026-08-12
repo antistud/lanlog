@@ -161,25 +161,26 @@ Pulls the Application/System/Security logs from this box and any other Windows m
 LAN into Logrr. **Nothing is installed on the collected machines** — the server reads their
 event logs over RPC (SPEC §6.4).
 
-**a. Turn it on** (`appsettings.json`). One entry per machine; `.` means this server:
+**a. Turn it on** in **Admin → Windows events** (`/admin/windows-events`). Tick *Collect Windows
+events*, then add one entry per machine — `.` is this server, anything else is a name or FQDN.
+There is no config file to edit and no restart: a save applies on the next poll, and shortening
+the poll interval takes effect immediately.
 
-```json
-"Logrr": {
-  "WindowsEvents": {
-    "Enabled": true,
-    "PollIntervalSeconds": 60,
-    "Sources": [
-      { "Machine": ".",     "AppId": "windows-logrr", "Channels": ["Application", "System"] },
-      { "Machine": "WEB01", "AppId": "windows-web01", "Channels": ["Application", "System"],
-        "MinimumLevel": "Warning" }
-    ]
-  }
-}
-```
+| Field | What it does |
+|---|---|
+| Machine | `.` for this server, else `WEB01` or `web01.contoso.com`. One entry per machine. |
+| App id | The app the events land in, created on first poll. Slug: `[a-z0-9-]{3,32}`. |
+| Channels | Comma-separated; empty means `Application, System`. |
+| Minimum level at creation | Seeds the new app's floor only — **Warning** by default, because Application and System are chatty at Information. |
+| Collect from this machine | Untick to pause a machine without losing its entry or its cursors. |
 
-Each `AppId` is created automatically on first poll (slug: `[a-z0-9-]{3,32}`), defaulting to a
-**Warning** floor because Application and System are chatty at Information. Change it in
-Admin → Apps afterwards; the collector reads that setting back and stops pulling below it.
+After the app exists, its floor is changed in Admin → Apps; the collector reads that setting
+back and stops pulling below it.
+
+> Upgrading from a build that configured this in `appsettings.json`? The `Logrr:WindowsEvents`
+> section is imported into the database on the first start after the upgrade — collection
+> carries on unchanged — and is ignored from then on. Edit the machines in the UI; further
+> edits to the file do nothing. `logrr-internal.log` records the import.
 
 **b. Give the app pool an identity that can read the logs.** This is the step that catches
 people out. `ApplicationPoolIdentity` is a *local* account and cannot authenticate to another
@@ -203,13 +204,23 @@ Management" new enable=yes`).
 ### What to expect
 
 Collection starts at the **tail** of each log: only events written from then on appear. Set
-`InitialBackfillHours` to pull recent history instead (max 720 — ingest rejects anything older
-than 30 days).
+*Initial backfill* on the same page to pull recent history instead (max 720 h — ingest rejects
+anything older than 30 days).
 
-Watch `logrr-internal.log` on the first poll. `Windows event collection starting at the tail
+The status table on that page is the first place to look: one row per machine and channel, with
+what it last read and what went wrong if anything did. **Collect now** polls immediately rather
+than waiting out the interval — the thing you want right after fixing a permission. **Reset**
+forgets a channel's high-water mark so the next poll starts again from the tail; you need it
+only if a cursor has run ahead of the log, which a restore from backup can do.
+
+`logrr-internal.log` carries the same story. `Windows event collection starting at the tail
 of …` means it is working. A warning naming a machine and channel means it could not read that
 one — almost always (b) or (c) above; it retries every poll and logs again once it recovers,
 and the other machines keep collecting meanwhile.
+
+Removing a machine stops collection and forgets its cursors; the events already collected stay
+in their app. To pause one instead, untick *Collect from this machine* — the entry and its
+cursors survive, so it resumes where it stopped.
 
 ## 10. SQL Server storage (optional)
 

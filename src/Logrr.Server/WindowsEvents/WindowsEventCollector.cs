@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Text.RegularExpressions;
 using Logrr.Server.Ingest;
 using Logrr.Storage.Control;
 using LogLevel = Logrr.Contracts.LogLevel;
@@ -13,14 +12,16 @@ namespace Logrr.Server.WindowsEvents;
 /// </summary>
 /// <remarks>
 /// Platform-agnostic by construction — it talks to <see cref="IWindowsEventSource"/>, so the
-/// cursor, catch-up and recovery behaviour is testable without a Windows event log.
+/// cursor, catch-up and recovery behaviour is testable without a Windows event log. Options
+/// arrive through a delegate rather than as a value because they are editable in the admin UI:
+/// every pass reads the current snapshot, so adding a machine takes effect on the next poll.
 /// </remarks>
-public sealed partial class WindowsEventCollector(
+public sealed class WindowsEventCollector(
     IWindowsEventSource source,
     WinlogCursorStore cursors,
     AppStore apps,
     IngestService ingest,
-    WindowsEventOptions options,
+    Func<WindowsEventOptions> options,
     Func<DateTimeOffset> clock,
     ILogger<WindowsEventCollector> logger)
 {
@@ -33,6 +34,9 @@ public sealed partial class WindowsEventCollector(
 
     /// <summary>App ids already rejected as malformed; logged once each rather than every poll.</summary>
     private readonly HashSet<string> _badAppIds = new(StringComparer.Ordinal);
+
+    /// <summary>The settings in force right now — they change while the process runs.</summary>
+    private WindowsEventOptions Options => options();
 
     /// <summary>
     /// Serialises polls. The timer and the admin page's "Collect now" both call
@@ -78,7 +82,10 @@ public sealed partial class WindowsEventCollector(
 
     private void CollectAllTargets(CancellationToken ct)
     {
-        foreach (var src in options.Sources)
+        var sources = Options.Sources;
+        Forget(sources);
+
+        foreach (var src in sources)
         {
             if (ct.IsCancellationRequested)
             {
@@ -134,6 +141,24 @@ public sealed partial class WindowsEventCollector(
     }
 
     /// <summary>
+    /// Drop health and app-id complaints for targets that are no longer configured. Without
+    /// this, removing a machine in the UI and adding it back would resurrect its old failure
+    /// count, and a fixed app id would never be complained about again if it broke twice.
+    /// </summary>
+    private void Forget(IReadOnlyList<WindowsEventSourceOptions> sources)
+    {
+        var live = new HashSet<string>(
+            sources.SelectMany(s => s.EffectiveChannels.Select(c => TargetKey(s.Machine, c))),
+            StringComparer.OrdinalIgnoreCase);
+
+        foreach (var key in _health.Keys.Where(k => !live.Contains(k)).ToList())
+        {
+            _health.TryRemove(key, out _);
+        }
+        _badAppIds.RemoveWhere(id => !sources.Any(s => string.Equals(s.AppId?.Trim(), id, StringComparison.Ordinal)));
+    }
+
+    /// <summary>
     /// Live status for every configured target, joined onto its stored cursor. Built from the
     /// configuration rather than from what has been collected, so a machine that has never once
     /// been reachable still appears — as a failing row, which is the case you need to see.
@@ -144,7 +169,7 @@ public sealed partial class WindowsEventCollector(
             c => TargetKey(c.Machine, c.Channel), StringComparer.OrdinalIgnoreCase);
 
         var rows = new List<WindowsEventTargetStatus>();
-        foreach (var src in options.Sources)
+        foreach (var src in Options.Sources)
         {
             foreach (var channel in src.EffectiveChannels)
             {
@@ -176,10 +201,13 @@ public sealed partial class WindowsEventCollector(
 
     private void CollectChannel(WindowsEventSourceOptions src, string channel, AppRecord app, TargetHealth health)
     {
+        // One snapshot for the whole channel: a save landing mid-catch-up must not change the
+        // batch ceiling half way through the loop that is honouring it.
+        var opts = Options;
         var cursor = cursors.Get(src.Machine, channel) ?? Seed(src, channel, app, health);
         var maxLevel = WindowsEventMapper.MaxWindowsLevelFor(app.MinimumLevel);
 
-        for (var batch = 0; batch < Math.Max(1, options.MaxBatchesPerPoll); batch++)
+        for (var batch = 0; batch < Math.Max(1, opts.MaxBatchesPerPoll); batch++)
         {
             var records = source.Read(new WindowsEventQuery
             {
@@ -187,7 +215,7 @@ public sealed partial class WindowsEventCollector(
                 Channel = channel,
                 AfterRecordId = cursor,
                 MaxWindowsLevel = maxLevel,
-                MaxEvents = Math.Max(1, options.MaxEventsPerPoll),
+                MaxEvents = Math.Max(1, opts.MaxEventsPerPoll),
             });
 
             if (records.Count == 0)
@@ -203,7 +231,7 @@ public sealed partial class WindowsEventCollector(
             cursor = Math.Max(cursor, records.Max(r => r.RecordId));
             cursors.Set(src.Machine, channel, cursor, clock());
 
-            if (records.Count < options.MaxEventsPerPoll)
+            if (records.Count < opts.MaxEventsPerPoll)
             {
                 return;
             }
@@ -211,7 +239,7 @@ public sealed partial class WindowsEventCollector(
 
         logger.LogInformation(
             "Windows event collection for {Machine}/{Channel} hit the {Batches}-batch ceiling; " +
-            "still behind, continuing next poll", src.Machine, channel, options.MaxBatchesPerPoll);
+            "still behind, continuing next poll", src.Machine, channel, opts.MaxBatchesPerPoll);
     }
 
     private void Ship(IReadOnlyList<WindowsEventRecord> records, WindowsEventSourceOptions src,
@@ -242,7 +270,8 @@ public sealed partial class WindowsEventCollector(
     /// </summary>
     private long Seed(WindowsEventSourceOptions src, string channel, AppRecord app, TargetHealth health)
     {
-        var hours = Math.Clamp(options.InitialBackfillHours, 0, WindowsEventOptions.MaxInitialBackfillHours);
+        var opts = Options;
+        var hours = Math.Clamp(opts.InitialBackfillHours, 0, WindowsEventOptions.MaxInitialBackfillHours);
         if (hours == 0)
         {
             var newest = source.NewestRecordId(src.Machine, channel) ?? 0;
@@ -259,7 +288,7 @@ public sealed partial class WindowsEventCollector(
             Channel = channel,
             Since = clock().AddHours(-hours),
             MaxWindowsLevel = WindowsEventMapper.MaxWindowsLevelFor(app.MinimumLevel),
-            MaxEvents = Math.Max(1, options.MaxEventsPerPoll),
+            MaxEvents = Math.Max(1, opts.MaxEventsPerPoll),
         });
 
         var cursor = records.Count > 0
@@ -308,7 +337,9 @@ public sealed partial class WindowsEventCollector(
     private AppRecord? ResolveApp(WindowsEventSourceOptions src)
     {
         var appId = src.AppId?.Trim() ?? "";
-        if (!AppIdPattern().IsMatch(appId))
+        // The admin UI rejects a bad slug before it can be saved; this still stands because a
+        // row written by an older build - or seeded from appsettings - has to be survivable.
+        if (!WindowsEventValidation.IsValidAppId(appId))
         {
             if (_badAppIds.Add(appId))
             {
@@ -343,7 +374,4 @@ public sealed partial class WindowsEventCollector(
             appId, src.Machine);
         return app;
     }
-
-    [GeneratedRegex("^[a-z0-9-]{3,32}$")]
-    private static partial Regex AppIdPattern();
 }

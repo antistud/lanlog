@@ -20,5 +20,10 @@
     <Routes />
     <script src="js/theme.js"></script>
     <script src="_framework/blazor.web.js"></script>
+    <script>
+        // Enhanced navigation restores <html> from the server markup, dropping data-theme.
+        Blazor.addEventListener('enhancedload', function () { window.logrrTheme.restore(); });
+        window.logrrTheme.restore();
+    </script>
 </body>
 </html>

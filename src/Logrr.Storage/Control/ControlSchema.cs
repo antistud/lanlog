@@ -165,5 +165,35 @@ public static class ControlSchema
           PRIMARY KEY (machine, channel)
         );
         """,
+
+        // v9 - Windows Event Log collection moves out of appsettings.json and into the control
+        // DB, so machines are added and removed in the UI without a restart (SPEC section 6.4).
+        // The config section seeds these tables once, on the first run that finds them empty.
+        """
+        CREATE TABLE winlog_settings (
+          id                     INTEGER PRIMARY KEY,  -- always 1; the collector has one config
+          enabled                INTEGER NOT NULL,
+          poll_interval_seconds  INTEGER NOT NULL,
+          max_events_per_poll    INTEGER NOT NULL,
+          max_batches_per_poll   INTEGER NOT NULL,
+          initial_backfill_hours INTEGER NOT NULL,
+          updated_utc            INTEGER NOT NULL
+        );
+
+        CREATE TABLE winlog_sources (
+          id            TEXT PRIMARY KEY,
+          machine       TEXT NOT NULL,   -- as typed: '.' for this host, else a name or FQDN
+          app_id        TEXT NOT NULL,
+          app_name      TEXT,
+          channels      TEXT,            -- JSON array; empty means the default Application+System
+          minimum_level INTEGER,         -- seeds the app on creation only; NULL means Warning
+          is_enabled    INTEGER NOT NULL,
+          created_utc   INTEGER NOT NULL
+        );
+
+        -- One row per machine. Two rows for the same machine would share its per-channel
+        -- cursors, so whichever polled second would silently collect nothing.
+        CREATE UNIQUE INDEX ux_winlog_sources_machine ON winlog_sources(machine COLLATE NOCASE);
+        """,
     ];
 }

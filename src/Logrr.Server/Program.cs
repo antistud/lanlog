@@ -257,19 +257,19 @@ builder.Services.AddHostedService<IngestDrainService>();
 
 // ---- Agentless Windows Event Log collection (SPEC §6.4) ----
 // The server reads the event log itself, locally or over RPC, so the collected machines need
-// nothing installed - which is the "no agent" promise in SPEC §1 taken literally.
-var windowsEvents = cfgRoot.GetSection("WindowsEvents").Get<WindowsEventOptions>() ?? new WindowsEventOptions();
-builder.Services.AddSingleton(windowsEvents);
-if (windowsEvents.Enabled && windowsEvents.Sources.Count > 0)
+// nothing installed - which is the "no agent" promise in SPEC §1 taken literally. Which
+// machines to read is control-DB state edited at /admin/windows-events, so the collector is
+// registered unconditionally on Windows and idles until it is switched on; Logrr:WindowsEvents
+// only seeds those rows on the first run after the upgrade.
+builder.Services.AddSingleton<WinlogConfigStore>();
+builder.Services.AddSingleton<WindowsEventSettings>();
+if (OperatingSystem.IsWindows())
 {
-    if (OperatingSystem.IsWindows())
-    {
-        WindowsEventRegistration.Add(builder.Services);
-    }
-    else
-    {
-        builder.Services.AddHostedService<WindowsEventUnavailableService>();
-    }
+    WindowsEventRegistration.Add(builder.Services);
+}
+else
+{
+    builder.Services.AddHostedService<WindowsEventUnavailableService>();
 }
 
 var app = builder.Build();
@@ -282,6 +282,9 @@ app.Logger.LogInformation("Logrr storage backend: {Backend}", dialect.Describe()
 using (var scope = app.Services.CreateScope())
 {
     scope.ServiceProvider.GetRequiredService<FirstRunBootstrapper>().Run();
+    // After the migrations, and before the collector's timer starts: loads the Windows event
+    // settings, importing them from Logrr:WindowsEvents the first time the tables are empty.
+    scope.ServiceProvider.GetRequiredService<WindowsEventSettings>().Initialize();
     // Warm the ingest pipeline singleton so writes are ready immediately.
     scope.ServiceProvider.GetRequiredService<IngestPipeline>();
 }

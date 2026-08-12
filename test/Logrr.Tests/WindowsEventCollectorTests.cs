@@ -84,8 +84,10 @@ public class WindowsEventCollectorTests : IDisposable
         var ingest = new IngestService(pipeline, new IngestLimits(), () => _now);
         var fake = source ?? new FakeSource();
 
+        // Options arrive through a delegate because they are editable in the admin UI; the
+        // harness hands over a fixed snapshot, which is what every test here wants.
         var collector = new WindowsEventCollector(
-            fake, cursors, apps, ingest, options, () => _now,
+            fake, cursors, apps, ingest, () => options, () => _now,
             NullLogger<WindowsEventCollector>.Instance);
 
         return new Harness(collector, fake, cursors, apps, new EventReader(partitions), pipeline);

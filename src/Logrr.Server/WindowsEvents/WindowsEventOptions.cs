@@ -1,11 +1,15 @@
+using System.Text.RegularExpressions;
+using Logrr.Storage.Control;
 using LogLevel = Logrr.Contracts.LogLevel;
 
 namespace Logrr.Server.WindowsEvents;
 
 /// <summary>
-/// Agentless Windows Event Log collection (SPEC §6.4), bound from <c>Logrr:WindowsEvents</c>.
-/// Off by default. The server reads the event log itself — over RPC for remote machines — so
-/// nothing has to be installed on the boxes being collected, which is the whole point.
+/// Agentless Windows Event Log collection (SPEC §6.4) as the collector sees it: a snapshot of
+/// the <c>winlog_settings</c> and <c>winlog_sources</c> rows, rebuilt by
+/// <see cref="WindowsEventSettings"/> whenever the admin UI changes them. Off by default. The
+/// server reads the event log itself — over RPC for remote machines — so nothing has to be
+/// installed on the boxes being collected, which is the whole point.
 /// </summary>
 public sealed class WindowsEventOptions
 {
@@ -82,4 +86,67 @@ public sealed class WindowsEventSourceOptions
     /// raising the floor stops the events being read at all, not just written.
     /// </summary>
     public LogLevel? MinimumLevel { get; init; }
+}
+
+/// <summary>
+/// The rules a collection source has to satisfy, in one place: the admin UI checks them before
+/// saving, the config seeder checks them before importing, and the collector checks the app id
+/// again at poll time because a row written by an older build still has to be survivable.
+/// </summary>
+public static partial class WindowsEventValidation
+{
+    public const int MinPollIntervalSeconds = 5;
+    public const int MaxPollIntervalSeconds = 3600;
+
+    /// <summary>Null when the machine is usable, else the message to put under the field.</summary>
+    public static string? MachineError(string? machine)
+    {
+        var value = machine?.Trim() ?? "";
+        if (value.Length == 0)
+        {
+            return "enter a machine name, or . for this server";
+        }
+        if (value.Length > 255)
+        {
+            return "machine name is too long";
+        }
+        // Anything with a separator in it is a path or an account, not a machine — and would
+        // fail at the event log API with a far less obvious error.
+        return value.Any(c => char.IsWhiteSpace(c) || c is '\\' or '/' or ':')
+            ? "just the machine name, e.g. WEB01 or web01.contoso.com"
+            : null;
+    }
+
+    /// <summary>Null when the app id is a usable slug, else the message to put under the field.</summary>
+    public static string? AppIdError(string? appId) =>
+        IsValidAppId(appId?.Trim()) ? null : "3–32 characters, lower-case letters, digits and hyphens only";
+
+    public static bool IsValidAppId(string? appId) =>
+        appId is not null && AppIdPattern().IsMatch(appId);
+
+    /// <summary>
+    /// Split the UI's comma-separated channel box into a list. Empty is legal and means the
+    /// collector's default pair; duplicates are dropped because a channel listed twice would be
+    /// polled twice for nothing.
+    /// </summary>
+    public static IReadOnlyList<string> ParseChannels(string? input) =>
+        (input ?? "")
+        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToList();
+
+    /// <summary>
+    /// Hold the global knobs to ranges the collector can actually honour, so what the settings
+    /// page shows after a save is what the next poll will do.
+    /// </summary>
+    public static WinlogSettings Clamp(WinlogSettings s) => s with
+    {
+        PollIntervalSeconds = Math.Clamp(s.PollIntervalSeconds, MinPollIntervalSeconds, MaxPollIntervalSeconds),
+        MaxEventsPerPoll = Math.Clamp(s.MaxEventsPerPoll, 1, 10_000),
+        MaxBatchesPerPoll = Math.Clamp(s.MaxBatchesPerPoll, 1, 1_000),
+        InitialBackfillHours = Math.Clamp(s.InitialBackfillHours, 0, WindowsEventOptions.MaxInitialBackfillHours),
+    };
+
+    [GeneratedRegex("^[a-z0-9-]{3,32}$")]
+    private static partial Regex AppIdPattern();
 }

@@ -64,6 +64,66 @@ curl -X POST http://localhost:5199/api/events/raw \
   --data-binary '{"@t":"2026-07-23T14:02:11Z","@mt":"Payment {Amount} failed","@l":"Error","Amount":49.99}'
 ```
 
+## Publish for IIS
+
+```bash
+dotnet publish src/Logrr.Server -c Release /p:PublishProfile=IIS
+```
+
+Output lands in `src/Logrr.Server/bin/Release/net10.0/publish/` — self-contained win-x64, so
+**no .NET runtime install is required on the server**. Deploy *that* folder, never the
+neighbouring `bin/Release/net10.0/win-x64/`: it has `Logrr.exe` and `web.config` but no
+`wwwroot`, so the site starts and every stylesheet and script 404s.
+
+On the server, `scripts/deploy-iis.ps1` does the rest (app pool, permissions, web.config,
+binding) and is safe to re-run:
+
+```powershell
+.\scripts\deploy-iis.ps1 -Port 5443 -HostHeader logrr.internal
+```
+
+Full walkthrough in [`docs/SETUP.md`](docs/SETUP.md).
+
+## Storing events in SQL Server (optional)
+
+The default is SQLite files under the data directory, and for a single box that's the intended
+option, not a lesser one. Point Logrr at SQL Server if you already back up, monitor and cluster
+one and want the log data inside that perimeter:
+
+```json
+"Logrr": {
+  "Storage": {
+    "ConnectionString": "Server=SQL01;Database=Logrr;Integrated Security=true;Encrypt=true;TrustServerCertificate=true;",
+    "Schema": "logrr"
+  }
+}
+```
+
+`LOGRR_SQL_CONNECTION` overrides it — tidier, since it keeps a credential out of the published
+folder — and `ConnectionStrings:Logrr` is read too. Empty means stay on SQLite. Create an empty
+database and give the app pool identity `db_owner` on it (or `db_ddladmin` + `db_datareader` +
+`db_datawriter`); Logrr creates its own schema and tables on first start. `Encrypt` defaults to
+true in the current client, so an internal server with a self-signed certificate needs
+`TrustServerCertificate=true` or the login fails outright.
+
+Every start names the backend in `logrr-internal.log`, which is the fastest way to tell a
+configuration problem from a connectivity one:
+
+```
+Logrr storage backend: SQL Server SQL01, database Logrr, schema logrr
+```
+
+The partition model carries over — an app-day is a table (`[logrr].[events_{app}_{yyyyMMdd}]`)
+instead of a file, and retention still drops it whole. Two things change: **full-text search
+becomes a `LIKE` scan inside the day's partition** (every term must appear, no stemming, so
+`connect` won't find `connection`), and the free-disk guard no longer applies — per-app age and
+size caps still do. The **data directory is still required** either way: the Data Protection
+`keys\` folder and the internal log live there, and losing `keys\` still makes destination
+secrets unrecoverable.
+
+Setup steps in [`docs/SETUP.md`](docs/SETUP.md) §10, design and the full backend comparison in
+[`docs/SPEC.md`](docs/SPEC.md) §4.7.
+
 ## Ingesting from other projects
 
 Add the `Logrr.Client` package and wire it into any `Microsoft.Extensions.Logging` app:
@@ -106,24 +166,16 @@ Logrr can pull the Application/System/Security logs from this box and any other 
 machine on the LAN — **without installing anything on them**. The server reads their event
 logs over RPC, so there is still no agent to deploy.
 
-```json
-"Logrr": {
-  "WindowsEvents": {
-    "Enabled": true,
-    "Sources": [
-      { "Machine": ".",     "AppId": "windows-logrr", "Channels": ["Application", "System"] },
-      { "Machine": "WEB01", "AppId": "windows-web01", "Channels": ["Application", "System"] }
-    ]
-  }
-}
-```
+Turn it on in **Admin → Windows events** and add the machines there — `.` for this server, a
+name or FQDN for anything else. It is ordinary settings in the database, not a config file: a
+save applies on the next poll, with no restart.
 
 Each machine's events land in their own app, grouped one event type per Windows event id, so
 notification rules and tickets work on them exactly as they do on application logs. Collection
-starts at the tail of each log and resumes from where it left off after a restart. The app
-pool needs an identity that can read the remote logs — setup and the permissions that catch
-people out are in [`docs/SETUP.md`](docs/SETUP.md) §9, design in
-[`docs/SPEC.md`](docs/SPEC.md) §6.4.
+starts at the tail of each log and resumes from where it left off after a restart, and the
+status table shows what each channel last read and why it failed if it did. The app pool needs
+an identity that can read the remote logs — setup and the permissions that catch people out are
+in [`docs/SETUP.md`](docs/SETUP.md) §9, design in [`docs/SPEC.md`](docs/SPEC.md) §6.4.
 
 **VB.NET:** worked, compiled examples live in [`clients/vb/`](clients/vb/README.md) —
 direct client, `Microsoft.Extensions.Logging`, ASP.NET Framework `Global.asax`, WinForms,

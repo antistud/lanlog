@@ -24,6 +24,7 @@ window.logrrTheme = {
       localStorage.setItem('logrr-theme', mode);
     }
     this.apply(mode);
+    this.paintToggles(mode);
   },
   // Cycle: system → light → dark → system
   cycle() {
@@ -31,5 +32,20 @@ window.logrrTheme = {
     const next = order[(order.indexOf(this.get()) + 1) % order.length];
     this.set(next);
     return next;
+  },
+  glyph(mode) {
+    return mode === 'dark' ? '☾' : mode === 'light' ? '☀' : '◐';
+  },
+  paintToggles(mode) {
+    const g = this.glyph(mode);
+    document.querySelectorAll('[data-theme-toggle]').forEach(b => { b.textContent = g; });
+  },
+  // Enhanced navigation re-syncs <html> against the server response, which never
+  // carries data-theme, and re-renders the toggle from its static markup. Both have
+  // to be restored after every enhanced page load.
+  restore() {
+    const mode = this.get();
+    this.apply(mode);
+    this.paintToggles(mode);
   },
 };

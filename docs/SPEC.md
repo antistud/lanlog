@@ -202,6 +202,9 @@ CREATE TABLE rules (...);               -- §10.3
 CREATE TABLE rule_occurrences (...);    -- §10.4
 CREATE TABLE deliveries (...);          -- §10.5
 CREATE TABLE ticket_links (...);        -- §10.6
+CREATE TABLE winlog_settings (...);     -- §6.4; single row, the collector's knobs
+CREATE TABLE winlog_sources (...);      -- §6.4; one row per collected machine, unique on machine
+CREATE TABLE winlog_cursors (...);      -- §6.4; high-water mark per (machine, channel)
 ```
 
 Control DB is small and low-traffic; a simple versioned migration runner (integer
@@ -416,7 +419,12 @@ Log itself — locally, and over RPC for other machines — so collected boxes n
 installed. That keeps the "no agent" promise in §1 literally true rather than merely
 true-for-your-own-apps, and it is the reason this is a server feature and not a shipper.
 
-Off by default; configured in `Logrr:WindowsEvents` (§12), one entry per machine.
+Off by default. Machines are configured in the admin UI and stored in `winlog_settings` and
+`winlog_sources` (§4.4), one row per machine, applied without a restart. `Logrr:WindowsEvents`
+(§12) seeds those rows on the first run that finds them empty and is ignored afterwards.
+
+One row per machine is enforced: the cursors below are keyed on (machine, channel), so a second
+row for the same machine would share them and silently collect nothing.
 
 **Mapping.** A record becomes an ordinary event, so search, filters, rules and tickets all
 work on it unchanged:
@@ -445,10 +453,13 @@ its raw data rather than an empty one.
 `EventRecordID`. A restart resumes exactly where it left off. Clearing a log restarts
 `EventRecordID` at 1, which would otherwise strand the cursor above every future record; an
 empty read triggers a check of the newest id and resets the cursor when it has gone backwards.
+Removing or renaming a machine in the UI deletes its cursors, so re-adding it later starts
+cleanly rather than resuming a record id from months ago; a single channel can also be reset
+by hand when its cursor has run ahead of the log — after a restore from backup, say.
 
 **First run** starts at the tail. An event log holds months of history, and importing it
-wholesale would bury the app and mostly be discarded by the −30 day skew bound anyway. Set
-`InitialBackfillHours` to pull a window instead (clamped to 720 h for the same reason).
+wholesale would bury the app and mostly be discarded by the −30 day skew bound anyway. Set an
+initial backfill to pull a window instead (clamped to 720 h for the same reason).
 
 **Filtering** is the app's `MinimumLevel` and nothing new: the collector translates it into a
 `Level` ceiling in the event log query, so records below the floor are never read off the wire
@@ -949,14 +960,6 @@ misconfigured IdP can't lock you out of your own log server.
       "GlobalMaxDeliveriesPerHour": 500, "DeadLetterRetentionDays": 30
     },
     "Auth": { "Windows": { "Enabled": false, "AutoSignIn": true } },
-    "WindowsEvents": {
-      "Enabled": false, "PollIntervalSeconds": 60,
-      "MaxEventsPerPoll": 500, "MaxBatchesPerPoll": 10, "InitialBackfillHours": 0,
-      "Sources": [
-        { "Machine": "WEB01", "AppId": "windows-web01",
-          "Channels": ["Application", "System"], "MinimumLevel": "Warning" }
-      ]
-    },
     "Defaults": { "RetentionDays": 14, "MaxSizeMb": 2048 },
     "SelfLog": { "MinimumLevel": "Information", "RetainedFileCount": 7 }
   }
@@ -973,9 +976,15 @@ repoint the database without editing the published `appsettings.json` and a shop
 every connection string in one place does not have to make an exception for this one.
 `Schema` applies to the SQL Server backend only.
 
-`WindowsEvents` obeys that line rather than crossing it: which machines to reach and with
-what credentials is deployment topology, like the Windows sign-in switch above it. The
-`MinimumLevel` on a source is used *only* to seed the app the first time it is created —
+`WindowsEvents` (§6.4) is not in the sample because it is no longer a setting here. Which
+machines to collect turned out to be operational state, not deployment topology: it is added to
+and removed from while the server runs, exactly like a CORS origin or a notification rule, so
+it lives in the control DB and is edited at `/admin/windows-events`. A `Logrr:WindowsEvents`
+section left over from an earlier build is still honoured **once**: the first run that finds
+`winlog_settings` empty imports it, logs that it has done so, and never reads it again. An
+existing install upgrades without touching its config file, and nothing ends up with two homes.
+
+The `MinimumLevel` on a source is used *only* to seed the app the first time it is created —
 after that the app's own setting in `control.db` governs, and the collector reads it back to
 narrow its query (§6.4). One concern, one home.
 

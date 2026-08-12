@@ -49,8 +49,8 @@
                 <div class="row" style="justify-content:space-between; padding:0 var(--sp-2)">
                     <a class="meta" href="/account/password" title="Change password">@context.User.Identity?.Name</a>
                     <div class="flex gap-2">
-                        <button class="btn ghost icon" title="Toggle theme"
-                                onclick="var m=window.logrrTheme.cycle();this.textContent=m==='dark'?'☾':m==='light'?'☀':'◐';">◐</button>
+                        <button class="btn ghost icon" title="Toggle theme" data-theme-toggle
+                                onclick="window.logrrTheme.cycle();">◐</button>
                         <form method="post" action="/auth/logout" style="display:inline">
                             <button class="btn ghost icon" type="submit" title="Sign out">⎋</button>
                         </form>
