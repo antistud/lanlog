@@ -1,6 +1,8 @@
+using System.Data.Common;
 using Logrr.Contracts;
 using Logrr.Core;
 using Logrr.Core.Filters;
+using Microsoft.Data.SqlClient;
 using Microsoft.Data.Sqlite;
 using Xunit;
 
@@ -66,23 +68,43 @@ public class FilterBackendAgreementTests
     [Fact]
     public void Sql_and_predicate_backends_agree_over_generated_events()
     {
-        var events = GenerateEvents(500, seed: 20260723);
-
         using var conn = new SqliteConnection("Data Source=:memory:");
         conn.Open();
-        CreateSchema(conn);
+        AssertBackendsAgree(conn, FilterSqlDialect.Sqlite);
+    }
+
+    /// <summary>
+    /// The same invariant against SQL Server. It carries more weight here than on SQLite,
+    /// because SQL Server agrees with <c>Compile()</c> on none of the defaults that matter:
+    /// string comparison is case-insensitive, <c>JSON_VALUE</c> hands back nvarchar whatever the
+    /// JSON type was, and <c>LIKE</c> reads <c>[…]</c> as a character class. Every one of those
+    /// is corrected in the emitter, and this is what proves it.
+    /// </summary>
+    [SqlServerFact]
+    public void Sql_server_and_predicate_backends_agree_over_generated_events()
+    {
+        using var db = new SqlServerTestDatabase();
+        using var conn = new SqlConnection(db.ConnectionString);
+        conn.Open();
+        AssertBackendsAgree(conn, FilterSqlDialect.SqlServer);
+    }
+
+    private static void AssertBackendsAgree(DbConnection conn, FilterSqlDialect dialect)
+    {
+        var events = GenerateEvents(500, seed: 20260723);
+        CreateSchema(conn, dialect);
         InsertEvents(conn, events);
 
         foreach (var filter in Filters)
         {
             var expr = FilterExpression.Parse(filter);
 
-            var sqlIds = QuerySql(conn, expr);
+            var sqlIds = QuerySql(conn, expr, dialect);
             var predicateIds = PredicateIds(events, expr);
 
             Assert.True(
                 sqlIds.SetEquals(predicateIds),
-                $"Backends diverged for filter: {filter}\n" +
+                $"Backends diverged on {dialect} for filter: {filter}\n" +
                 $"  only in SQL:       {string.Join(",", sqlIds.Except(predicateIds).Order())}\n" +
                 $"  only in predicate: {string.Join(",", predicateIds.Except(sqlIds).Order())}");
         }
@@ -115,42 +137,58 @@ public class FilterBackendAgreementTests
         return list;
     }
 
-    private static void CreateSchema(SqliteConnection conn)
+    private static void CreateSchema(DbConnection conn, FilterSqlDialect dialect)
     {
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = """
-            CREATE TABLE events (
-              id INTEGER PRIMARY KEY,
-              ts INTEGER NOT NULL,
-              level INTEGER NOT NULL,
-              message TEXT NOT NULL,
-              exception TEXT,
-              source TEXT,
-              trace_id TEXT,
-              span_id TEXT,
-              machine TEXT,
-              properties TEXT
-            );
-            """;
+        cmd.CommandText = dialect == FilterSqlDialect.SqlServer
+            ? """
+              CREATE TABLE events (
+                id BIGINT NOT NULL PRIMARY KEY,
+                ts BIGINT NOT NULL,
+                level INT NOT NULL,
+                message NVARCHAR(MAX) NOT NULL,
+                exception NVARCHAR(MAX) NULL,
+                source NVARCHAR(256) NULL,
+                trace_id NVARCHAR(64) NULL,
+                span_id NVARCHAR(64) NULL,
+                machine NVARCHAR(256) NULL,
+                properties NVARCHAR(MAX) NULL
+              );
+              """
+            : """
+              CREATE TABLE events (
+                id INTEGER PRIMARY KEY,
+                ts INTEGER NOT NULL,
+                level INTEGER NOT NULL,
+                message TEXT NOT NULL,
+                exception TEXT,
+                source TEXT,
+                trace_id TEXT,
+                span_id TEXT,
+                machine TEXT,
+                properties TEXT
+              );
+              """;
         cmd.ExecuteNonQuery();
     }
 
-    private static void InsertEvents(SqliteConnection conn, List<(long Id, LogEvent Event)> events)
+    private static void InsertEvents(DbConnection conn, List<(long Id, LogEvent Event)> events)
     {
         using var tx = conn.BeginTransaction();
         using var cmd = conn.CreateCommand();
+        cmd.Transaction = tx;
         cmd.CommandText = """
             INSERT INTO events (id, ts, level, message, exception, source, machine, properties)
-            VALUES ($id, $ts, $level, $message, $exception, $source, $machine, $properties);
+            VALUES (@id, @ts, @level, @message, @exception, @source, @machine, @properties);
             """;
-        var pId = cmd.CreateParameter(); pId.ParameterName = "$id"; cmd.Parameters.Add(pId);
-        var pTs = cmd.CreateParameter(); pTs.ParameterName = "$ts"; cmd.Parameters.Add(pTs);
-        var pLevel = cmd.CreateParameter(); pLevel.ParameterName = "$level"; cmd.Parameters.Add(pLevel);
-        var pMsg = cmd.CreateParameter(); pMsg.ParameterName = "$message"; cmd.Parameters.Add(pMsg);
-        var pExc = cmd.CreateParameter(); pExc.ParameterName = "$exception"; cmd.Parameters.Add(pExc);
-        var pSrc = cmd.CreateParameter(); pSrc.ParameterName = "$source"; cmd.Parameters.Add(pSrc);
-        var pMachine = cmd.CreateParameter(); pMachine.ParameterName = "$machine"; cmd.Parameters.Add(pMachine);
-        var pProps = cmd.CreateParameter(); pProps.ParameterName = "$properties"; cmd.Parameters.Add(pProps);
+        var pId = cmd.CreateParameter(); pId.ParameterName = "@id"; cmd.Parameters.Add(pId);
+        var pTs = cmd.CreateParameter(); pTs.ParameterName = "@ts"; cmd.Parameters.Add(pTs);
+        var pLevel = cmd.CreateParameter(); pLevel.ParameterName = "@level"; cmd.Parameters.Add(pLevel);
+        var pMsg = cmd.CreateParameter(); pMsg.ParameterName = "@message"; cmd.Parameters.Add(pMsg);
+        var pExc = cmd.CreateParameter(); pExc.ParameterName = "@exception"; cmd.Parameters.Add(pExc);
+        var pSrc = cmd.CreateParameter(); pSrc.ParameterName = "@source"; cmd.Parameters.Add(pSrc);
+        var pMachine = cmd.CreateParameter(); pMachine.ParameterName = "@machine"; cmd.Parameters.Add(pMachine);
+        var pProps = cmd.CreateParameter(); pProps.ParameterName = "@properties"; cmd.Parameters.Add(pProps);
 
         foreach (var (id, e) in events)
         {
@@ -167,9 +205,10 @@ public class FilterBackendAgreementTests
         tx.Commit();
     }
 
-    private static HashSet<long> QuerySql(SqliteConnection conn, FilterExpression expr)
+    private static HashSet<long> QuerySql(
+        DbConnection conn, FilterExpression expr, FilterSqlDialect dialect)
     {
-        var (sql, parameters) = expr.ToSql();
+        var (sql, parameters) = expr.ToSql(dialect);
         using var cmd = conn.CreateCommand();
         cmd.CommandText = $"SELECT id FROM events WHERE {sql};";
         for (var i = 0; i < parameters.Count; i++)
@@ -184,7 +223,7 @@ public class FilterBackendAgreementTests
         using var reader = cmd.ExecuteReader();
         while (reader.Read())
         {
-            ids.Add(reader.GetInt64(0));
+            ids.Add(Convert.ToInt64(reader.GetValue(0)));
         }
         return ids;
     }

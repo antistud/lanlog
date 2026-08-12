@@ -58,6 +58,9 @@ public sealed class SqliteDialect(StoragePaths paths) : SqlDialect
     public override void SetSchemaVersion(DbConnection conn, long version) =>
         Db.Exec(conn, $"PRAGMA user_version = {version};");
 
+    /// <summary>One database, one namespace — the bare name is already unambiguous.</summary>
+    public override string ControlTable(string table) => table;
+
     // ---- Partitions -------------------------------------------------------------------
 
     /// <summary>Every partition file holds exactly one table, so the name never varies.</summary>

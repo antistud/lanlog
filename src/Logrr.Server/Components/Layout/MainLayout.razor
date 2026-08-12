@@ -39,7 +39,8 @@
                 <AuthorizeView Roles="Admin" Context="admin">
                     <div class="nav-group">
                         <div class="label">System</div>
-                        <NavLink class="nav-link" href="/admin"><span class="ico">◉</span> Admin</NavLink>
+                        <NavLink class="nav-link" href="/admin" Match="NavLinkMatch.All"><span class="ico">◉</span> Admin</NavLink>
+                        <NavLink class="nav-link" href="/admin/windows-events"><span class="ico">▤</span> Windows events</NavLink>
                     </div>
                 </AuthorizeView>
 

@@ -31,6 +31,8 @@ public static class ClefParser
     private const string R = "@r";   // renderings
     private const string Tr = "@tr"; // trace id
     private const string Sp = "@sp"; // span id
+    private const string Ps = "@ps"; // parent span id
+    private const string St = "@st"; // span start (this event ends a span)
 
     /// <summary>
     /// Parse one CLEF object. <paramref name="nowUtc"/> is the server clock used when
@@ -50,6 +52,8 @@ public static class ClefParser
         string? exception = null;
         string? traceId = null;
         string? spanId = null;
+        string? parentSpanId = null;
+        string? spanStart = null;
         LogLevel level = LevelMap.Default;
         string? rawLevel = null;
         var properties = new Dictionary<string, object?>(StringComparer.Ordinal);
@@ -93,11 +97,19 @@ public static class ClefParser
                     break;
 
                 case Tr:
-                    traceId = prop.Value.GetString();
+                    traceId = AsString(prop.Value);
                     break;
 
                 case Sp:
-                    spanId = prop.Value.GetString();
+                    spanId = AsString(prop.Value);
+                    break;
+
+                case Ps:
+                    parentSpanId = AsString(prop.Value);
+                    break;
+
+                case St:
+                    spanStart = AsString(prop.Value);
                     break;
 
                 case I:
@@ -116,6 +128,17 @@ public static class ClefParser
         if (rawLevel is not null)
         {
             properties["_rawLevel"] = rawLevel;
+        }
+
+        // Span shape has no columns of its own (see SpanFields) — it travels as properties,
+        // which is all the trace view needs to nest spans and measure them.
+        if (parentSpanId is not null)
+        {
+            properties[SpanFields.ParentSpanId] = parentSpanId;
+        }
+        if (spanStart is not null)
+        {
+            properties[SpanFields.SpanStart] = spanStart;
         }
 
         // @m is optional; render @mt server-side when it is absent (SPEC §6.1).
@@ -139,4 +162,11 @@ public static class ClefParser
 
         return ClefParseResult.Success(ev);
     }
+
+    /// <summary>
+    /// Reserved fields that are ids, read leniently: a non-string <c>@tr</c> is a malformed
+    /// line, and this parser's contract is to never throw on one.
+    /// </summary>
+    private static string? AsString(JsonElement value) =>
+        value.ValueKind == JsonValueKind.String ? value.GetString() : null;
 }

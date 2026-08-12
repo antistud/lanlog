@@ -66,10 +66,10 @@ public class WindowsEventCollectorTests : IDisposable
     // ---- Harness -----------------------------------------------------------------------
 
     private sealed record Harness(
-        WindowsEventCollector Collector, FakeSource Source, WinlogCursorStore Cursors,
+        WindowsEventCollector Collector, IWindowsEventSource Source, WinlogCursorStore Cursors,
         AppStore Apps, EventReader Reader, IngestPipeline Pipeline);
 
-    private Harness NewHarness(WindowsEventOptions options, FakeSource? source = null)
+    private Harness NewHarness(WindowsEventOptions options, IWindowsEventSource? source = null)
     {
         var paths = new StoragePaths(_root);
         paths.EnsureRootDirectories();
@@ -277,23 +277,27 @@ public class WindowsEventCollectorTests : IDisposable
     {
         // The floor is pushed into the event log query, so filtered-out records are never read
         // off the wire rather than being fetched and discarded.
-        var h = NewHarness(Options(minimum: LogLevel.Error), new FakeSource { Records = [Rec(1)] });
+        var source = new FakeSource { Records = [Rec(1)] };
+        var h = NewHarness(Options(minimum: LogLevel.Error), source);
         h.Cursors.Set("WEB01", "System", 0, _now);
 
         h.Collector.CollectOnce(CancellationToken.None);
 
-        Assert.All(h.Source.Queries, q => Assert.Equal(2, q.MaxWindowsLevel));
+        Assert.NotEmpty(source.Queries);
+        Assert.All(source.Queries, q => Assert.Equal(2, q.MaxWindowsLevel));
     }
 
     [Fact]
     public void Reads_everything_when_the_app_floor_is_verbose()
     {
-        var h = NewHarness(Options(minimum: LogLevel.Verbose), new FakeSource { Records = [Rec(1)] });
+        var source = new FakeSource { Records = [Rec(1)] };
+        var h = NewHarness(Options(minimum: LogLevel.Verbose), source);
         h.Cursors.Set("WEB01", "System", 0, _now);
 
         h.Collector.CollectOnce(CancellationToken.None);
 
-        Assert.All(h.Source.Queries, q => Assert.Null(q.MaxWindowsLevel));
+        Assert.NotEmpty(source.Queries);
+        Assert.All(source.Queries, q => Assert.Null(q.MaxWindowsLevel));
     }
 
     // ---- Resilience --------------------------------------------------------------------
@@ -330,18 +334,20 @@ public class WindowsEventCollectorTests : IDisposable
             Enabled = true,
             Sources = [new WindowsEventSourceOptions { Machine = "WEB01", AppId = "Not A Slug!" }],
         };
-        var h = NewHarness(options, new FakeSource { Records = [Rec(1)] });
+        var source = new FakeSource { Records = [Rec(1)] };
+        var h = NewHarness(options, source);
 
         h.Collector.CollectOnce(CancellationToken.None); // must not throw
 
         Assert.Empty(h.Apps.List());
-        Assert.Empty(h.Source.Queries);
+        Assert.Empty(source.Queries);
     }
 
     [Fact]
     public void Skips_a_disabled_app_without_reading_anything()
     {
-        var h = NewHarness(Options(), new FakeSource { Records = [Rec(1)] });
+        var source = new FakeSource { Records = [Rec(1)] };
+        var h = NewHarness(Options(), source);
         h.Apps.Create(new AppRecord
         {
             Id = "windows",
@@ -352,7 +358,177 @@ public class WindowsEventCollectorTests : IDisposable
 
         h.Collector.CollectOnce(CancellationToken.None);
 
-        Assert.Empty(h.Source.Queries);
+        Assert.Empty(source.Queries);
+    }
+
+    // ---- Channel resolution ------------------------------------------------------------
+
+    [Fact]
+    public void Configured_channels_replace_the_defaults_rather_than_adding_to_them()
+    {
+        // The configuration binder appends to a collection property's existing contents, so a
+        // non-empty default on Channels would leave a configured source collecting the defaults
+        // too — every channel polled twice and listed twice on the status page.
+        var src = new WindowsEventSourceOptions { Channels = ["Application", "System"] };
+
+        Assert.Equal(["Application", "System"], src.EffectiveChannels);
+    }
+
+    [Fact]
+    public void An_unset_channel_list_falls_back_to_the_default_pair()
+    {
+        Assert.Equal(["Application", "System"], new WindowsEventSourceOptions().EffectiveChannels);
+    }
+
+    [Fact]
+    public void Duplicate_and_blank_channels_are_collapsed()
+    {
+        var src = new WindowsEventSourceOptions { Channels = ["System", " system ", "", "Application"] };
+
+        Assert.Equal(["System", "Application"], src.EffectiveChannels);
+    }
+
+    [Fact]
+    public void Each_channel_is_polled_and_listed_exactly_once()
+    {
+        var options = new WindowsEventOptions
+        {
+            Enabled = true,
+            Sources =
+            [
+                new WindowsEventSourceOptions
+                {
+                    Machine = "WEB01", AppId = "windows", Channels = ["System", "System"],
+                },
+            ],
+        };
+        var source = new FakeSource { Records = [Rec(1)] };
+        var h = NewHarness(options, source);
+        h.Cursors.Set("WEB01", "System", 0, _now);
+
+        h.Collector.CollectOnce(CancellationToken.None);
+
+        Assert.Single(h.Collector.Status());
+        // One read that returned the record, one that came back short and ended the loop.
+        Assert.All(source.Queries, q => Assert.Equal("System", q.Channel));
+        Assert.Single(source.Queries);
+    }
+
+    // ---- Status (admin page) -----------------------------------------------------------
+
+    [Fact]
+    public void Reports_a_row_for_every_configured_target_before_anything_is_polled()
+    {
+        // A machine that has never been reachable must still appear — that is the row you need
+        // to see, and building status from config rather than from cursors is what guarantees it.
+        var h = NewHarness(Options(), new FakeSource());
+
+        var status = h.Collector.Status();
+
+        var row = Assert.Single(status);
+        Assert.Equal("WEB01", row.Machine);
+        Assert.Equal("System", row.Channel);
+        Assert.Equal("windows", row.AppId);
+        Assert.True(row.IsPending);
+        Assert.False(row.IsFailing);
+        Assert.Null(row.LastRecordId);
+    }
+
+    [Fact]
+    public void Status_reports_cursor_counts_and_recovery()
+    {
+        var source = new FakeSource { Records = [Rec(1), Rec(2), Rec(3)] };
+        var h = NewHarness(Options(), source);
+        h.Cursors.Set("WEB01", "System", 0, _now);
+
+        h.Collector.CollectOnce(CancellationToken.None);
+
+        var ok = Assert.Single(h.Collector.Status());
+        Assert.False(ok.IsFailing);
+        Assert.False(ok.IsPending);
+        Assert.Equal(3, ok.LastRecordId);
+        Assert.Equal(3, ok.EventsCollected);
+        Assert.NotNull(ok.LastSuccessUtc);
+        Assert.NotNull(h.Collector.LastPollUtc);
+
+        // Machine goes away…
+        source.Throw = new InvalidOperationException("RPC server unavailable");
+        h.Collector.CollectOnce(CancellationToken.None);
+        var bad = Assert.Single(h.Collector.Status());
+        Assert.True(bad.IsFailing);
+        Assert.Equal(1, bad.ConsecutiveFailures);
+        Assert.Equal("RPC server unavailable", bad.LastError);
+        Assert.Equal(3, bad.LastRecordId); // cursor held
+
+        // …and comes back.
+        source.Throw = null;
+        h.Collector.CollectOnce(CancellationToken.None);
+        var recovered = Assert.Single(h.Collector.Status());
+        Assert.False(recovered.IsFailing);
+        Assert.Equal(0, recovered.ConsecutiveFailures);
+        Assert.Null(recovered.LastError);
+    }
+
+    [Fact]
+    public void Status_resolves_the_local_machine_alias_for_display()
+    {
+        var options = new WindowsEventOptions
+        {
+            Enabled = true,
+            Sources = [new WindowsEventSourceOptions { Machine = ".", AppId = "windows", Channels = ["System"] }],
+        };
+        var h = NewHarness(options, new FakeSource());
+
+        var row = Assert.Single(h.Collector.Status());
+
+        Assert.Equal(Environment.MachineName, row.Machine);
+        Assert.Equal(".", row.ConfiguredMachine); // still findable in the config file
+    }
+
+    [Fact]
+    public async Task A_concurrent_poll_is_skipped_rather_than_double_reading_the_cursor()
+    {
+        // "Collect now" in the admin UI and the background timer can fire together. Two passes
+        // at once would read the same cursor and ship every event between them twice.
+        var gate = new ManualResetEventSlim(false);
+        var entered = new ManualResetEventSlim(false);
+        var source = new BlockingSource(gate, entered) { Records = [Rec(1)] };
+        var h = NewHarness(Options(), source);
+        h.Cursors.Set("WEB01", "System", 0, _now);
+
+        var first = Task.Run(() => h.Collector.CollectOnce(CancellationToken.None));
+        Assert.True(entered.Wait(TimeSpan.FromSeconds(5)));
+
+        h.Collector.CollectOnce(CancellationToken.None); // must return immediately, doing nothing
+        Assert.True(h.Collector.IsCollecting);
+
+        gate.Set();
+        await first;
+
+        Assert.Equal(1, source.ReadCount); // the second call did not read
+        Assert.Equal(1, h.Cursors.Get("WEB01", "System"));
+    }
+
+    /// <summary>A source that parks inside the first read so a second poll overlaps it.</summary>
+    private sealed class BlockingSource(ManualResetEventSlim release, ManualResetEventSlim entered)
+        : IWindowsEventSource
+    {
+        public List<WindowsEventRecord> Records { get; init; } = [];
+        public int ReadCount;
+
+        public IReadOnlyList<WindowsEventRecord> Read(WindowsEventQuery query)
+        {
+            if (Interlocked.Increment(ref ReadCount) == 1)
+            {
+                entered.Set();
+                release.Wait(TimeSpan.FromSeconds(5));
+                return Records;
+            }
+            return [];
+        }
+
+        public long? NewestRecordId(string machine, string channel) =>
+            Records.Count == 0 ? null : Records.Max(r => r.RecordId);
     }
 
     public void Dispose()

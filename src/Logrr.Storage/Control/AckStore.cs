@@ -39,12 +39,15 @@ public sealed record AckSnapshot(long AppWideThroughTs, IReadOnlyDictionary<long
 /// <summary>CRUD for the <c>acks</c> table (SPEC §7 overview alert).</summary>
 public sealed class AckStore(ControlDatabase db)
 {
+    /// <summary>Schema-qualified on SQL Server, bare on SQLite.</summary>
+    private string Table => db.T("acks");
+
     public IReadOnlyList<Ack> ListByApp(string appId)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText =
-            "SELECT app_id, scope, through_ts, note, acked_by, created_utc FROM acks " +
+            $"SELECT app_id, scope, through_ts, note, acked_by, created_utc FROM {Table} " +
             "WHERE app_id = @a ORDER BY created_utc DESC;";
         cmd.Add("@a", appId);
         using var reader = cmd.ExecuteReader();
@@ -94,19 +97,19 @@ public sealed class AckStore(ControlDatabase db)
             // UPDLOCK/SERIALIZABLE on the probe is the standard SQL Server upsert: it takes the
             // key range lock up front so a concurrent ack of the same scope waits rather than
             // racing the INSERT into a primary-key violation.
-            ? """
+            ? $"""
               BEGIN TRANSACTION;
-              UPDATE acks WITH (UPDLOCK, SERIALIZABLE)
+              UPDATE {Table} WITH (UPDLOCK, SERIALIZABLE)
                 SET through_ts = CASE WHEN through_ts > @t THEN through_ts ELSE @t END,
                     note = @n, acked_by = @by, created_utc = @c
                 WHERE app_id = @a AND scope = @s;
               IF @@ROWCOUNT = 0
-                INSERT INTO acks (app_id, scope, through_ts, note, acked_by, created_utc)
+                INSERT INTO {Table} (app_id, scope, through_ts, note, acked_by, created_utc)
                 VALUES (@a, @s, @t, @n, @by, @c);
               COMMIT;
               """
-            : """
-              INSERT INTO acks (app_id, scope, through_ts, note, acked_by, created_utc)
+            : $"""
+              INSERT INTO {Table} (app_id, scope, through_ts, note, acked_by, created_utc)
               VALUES (@a, @s, @t, @n, @by, @c)
               ON CONFLICT (app_id, scope) DO UPDATE SET
                 through_ts = MAX(acks.through_ts, excluded.through_ts),
@@ -126,7 +129,7 @@ public sealed class AckStore(ControlDatabase db)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "DELETE FROM acks WHERE app_id = @a AND scope = @s;";
+        cmd.CommandText = $"DELETE FROM {Table} WHERE app_id = @a AND scope = @s;";
         cmd.Add("@a", appId);
         cmd.Add("@s", scope);
         cmd.ExecuteNonQuery();
@@ -137,7 +140,7 @@ public sealed class AckStore(ControlDatabase db)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "DELETE FROM acks WHERE app_id = @a;";
+        cmd.CommandText = $"DELETE FROM {Table} WHERE app_id = @a;";
         cmd.Add("@a", appId);
         cmd.ExecuteNonQuery();
     }

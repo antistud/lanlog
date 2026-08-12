@@ -16,12 +16,15 @@ namespace Logrr.Storage.Sql;
 /// </summary>
 public sealed partial class SqlServerDialect : SqlDialect
 {
+    /// <summary>Columns bound per event row by <see cref="InsertChunk"/>.</summary>
+    private const int EventColumns = 12;
+
     /// <summary>
-    /// SQL Server caps a statement at 2100 parameters. Twelve columns per event means 175 rows
-    /// fits comfortably; batches larger than this are sent as several multi-row inserts inside
-    /// the one transaction.
+    /// SQL Server caps a statement at 2100 parameters, and that cap is inclusive — 175 rows of
+    /// 12 columns is exactly 2100 and is rejected. Leave headroom rather than sitting on the
+    /// boundary; batches larger than this go out as several multi-row inserts in one transaction.
     /// </summary>
-    private const int MaxRowsPerInsert = 175;
+    private const int MaxRowsPerInsert = 2000 / EventColumns;
 
     private readonly string _connectionString;
 
@@ -55,12 +58,30 @@ public sealed partial class SqlServerDialect : SqlDialect
     [GeneratedRegex("^[a-z0-9-]{1,32}$")]
     private static partial Regex AppIdSlug();
 
+    private bool _schemaEnsured;
+
+    /// <summary>
+    /// Create the schema if it is missing. Partition writes go through here as well as control
+    /// initialisation: a partition table must not depend on bootstrap having run first, or the
+    /// very first ingest after a fresh deploy races the first-run path. The statement is
+    /// idempotent, so the flag is only there to keep it off the steady-state write path.
+    /// </summary>
+    private void EnsureSchema(DbConnection conn)
+    {
+        if (Volatile.Read(ref _schemaEnsured))
+        {
+            return;
+        }
+        Db.Exec(conn, $"IF SCHEMA_ID('{Schema}') IS NULL EXEC('CREATE SCHEMA [{Schema}]');");
+        Volatile.Write(ref _schemaEnsured, true);
+    }
+
     // ---- Control database -------------------------------------------------------------
 
     public override void EnsureControlCreated()
     {
         using var conn = OpenRaw();
-        Db.Exec(conn, $"IF SCHEMA_ID('{Schema}') IS NULL EXEC('CREATE SCHEMA [{Schema}]');");
+        EnsureSchema(conn);
         Db.Exec(conn, $"""
             IF OBJECT_ID('{Schema}.schema_version') IS NULL
               CREATE TABLE [{Schema}].[schema_version] (
@@ -101,6 +122,8 @@ public sealed partial class SqlServerDialect : SqlDialect
     public override void SetSchemaVersion(DbConnection conn, long version) =>
         Db.Exec(conn, $"UPDATE [{Schema}].[schema_version] SET version = {version};");
 
+    public override string ControlTable(string table) => $"[{Schema}].[{table}]";
+
     // ---- Partitions -------------------------------------------------------------------
 
     public override string PartitionTable(string appId, DateOnly day) =>
@@ -130,6 +153,7 @@ public sealed partial class SqlServerDialect : SqlDialect
         string appId, DateOnly day, IReadOnlyList<string> indexedProperties)
     {
         var conn = OpenRaw();
+        EnsureSchema(conn);
         Db.Exec(conn, SqlServerPartitionSchema.BuildDdl(
             Schema, PartitionTableName(appId, day), indexedProperties));
         return conn;

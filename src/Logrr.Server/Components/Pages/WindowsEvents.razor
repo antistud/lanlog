@@ -1,0 +1,242 @@
+@page "/admin/windows-events"
+@attribute [Authorize(Roles = "Admin")]
+@rendermode InteractiveServer
+@implements IDisposable
+@using Logrr.Server.WindowsEvents
+@inject Logrr.Server.WindowsEvents.WindowsEventOptions Options
+@inject IServiceProvider Services
+
+<PageTitle>Windows events — Logrr</PageTitle>
+
+<div class="page-head">
+    <div>
+        <h1>Windows events</h1>
+        <div class="sub">Agentless Event Log collection — the server reads these machines, nothing is installed on them.</div>
+    </div>
+    @if (_collector is not null)
+    {
+        <button class="btn ghost" disabled="@_busy" @onclick="CollectNow">
+            @(_busy ? "Collecting…" : "↻ Collect now")
+        </button>
+    }
+</div>
+
+@if (!Options.Enabled)
+{
+    <div class="card">
+        <EmptyState Glyph="◫" Title="Collection is off">
+            Set <code>Logrr:WindowsEvents:Enabled</code> and list the machines to read, then restart.
+            Each machine's events land in their own app, grouped one event type per Windows event id.
+            <pre class="code" style="text-align:left; margin-top:var(--sp-3)">@ConfigSample</pre>
+            Permissions and firewall setup are in <code>docs/SETUP.md</code> §9.
+        </EmptyState>
+    </div>
+}
+else if (_collector is null)
+{
+    <div class="card">
+        <EmptyState Glyph="⚠" Title="Not available on this host">
+            Collection is enabled in configuration but this server is not running on Windows,
+            so the Event Log cannot be read. The setting is ignored.
+        </EmptyState>
+    </div>
+}
+else if (Options.Sources.Count == 0)
+{
+    <div class="card">
+        <EmptyState Glyph="◫" Title="No machines configured">
+            Collection is on, but <code>Logrr:WindowsEvents:Sources</code> is empty — there is nothing to read.
+        </EmptyState>
+    </div>
+}
+else
+{
+    <div class="grid cols-4 mb-4">
+        <StatTile Label="Machines" Value="@_machines.ToString()" Small="true" />
+        <StatTile Label="Channels" Value="@_rows.Count.ToString()" Small="true" />
+        <StatTile Label="Failing" Value="@_failing.ToString()" Small="true" Alert="_failing > 0" />
+        <StatTile Label="Collected this run" Value="@_total.ToString("N0")" Small="true"
+                  Foot="@(_collector.LastPollUtc is { } p ? $"last poll {Ago(p)}" : "no poll yet")" />
+    </div>
+
+    @if (_failing > 0)
+    {
+        <div class="badge warn mb-4">
+            @_failing of @_rows.Count channel(s) could not be read. Almost always the app pool identity
+            (it must be a domain account in <strong>Event Log Readers</strong> on the target) or the
+            <strong>Remote Event Log Management</strong> firewall rule — see <code>docs/SETUP.md</code> §9.
+        </div>
+    }
+
+    <div class="table-wrap">
+        <table class="data">
+            <thead>
+                <tr>
+                    <th>Machine</th><th>Channel</th><th>App</th><th>Status</th>
+                    <th class="text-right">Collected</th><th class="text-right">Record</th><th>Last read</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var r in _rows)
+                {
+                    <tr>
+                        <td>
+                            <strong>@r.Machine</strong>
+                            @if (!string.Equals(r.Machine, r.ConfiguredMachine, StringComparison.OrdinalIgnoreCase))
+                            {
+                                <span class="meta" style="margin-left:6px">(@r.ConfiguredMachine)</span>
+                            }
+                        </td>
+                        <td><code>@r.Channel</code></td>
+                        <td><a href="@($"/apps/{r.AppId}/search")">@r.AppId</a></td>
+                        <td>
+                            @if (r.IsFailing)
+                            {
+                                <span class="badge danger" title="@r.LastError">
+                                    Failing @(r.ConsecutiveFailures > 1 ? $"({r.ConsecutiveFailures} polls)" : "")
+                                </span>
+                            }
+                            else if (r.IsPending)
+                            {
+                                <span class="badge">Waiting for first poll</span>
+                            }
+                            else
+                            {
+                                <span class="badge accent">OK</span>
+                            }
+                        </td>
+                        <td class="text-right">@r.EventsCollected.ToString("N0")</td>
+                        <td class="text-right meta">@(r.LastRecordId?.ToString("N0") ?? "—")</td>
+                        <td class="meta">@(r.LastSuccessUtc is { } s ? Ago(s) : "—")</td>
+                    </tr>
+                    @if (r.IsFailing && r.LastError is not null)
+                    {
+                        <tr>
+                            <td colspan="7" class="meta" style="padding-top:0; color:var(--danger)">@r.LastError</td>
+                        </tr>
+                    }
+                }
+            </tbody>
+        </table>
+    </div>
+
+    <div class="card">
+        <div class="card-head"><h3>How this works</h3></div>
+        <div class="meta" style="line-height:1.7">
+            Polling every @Options.PollIntervalSeconds s. Each channel keeps a high-water mark on its
+            <code>EventRecordID</code>, so a restart resumes exactly where it left off, and clearing a log
+            is detected and recovered from. Collection starts at the <strong>tail</strong> of each log —
+            @(Options.InitialBackfillHours > 0
+                ? $"except on first sight, where the last {Options.InitialBackfillHours}h are backfilled."
+                : "only events written from then on appear. Set InitialBackfillHours to pull history.")
+            Filtering is each app's own <strong>minimum level</strong>: it is pushed into the Event Log
+            query, so records below the floor are never read off the wire.
+        </div>
+    </div>
+}
+
+@code {
+    private WindowsEventCollector? _collector;
+    private IReadOnlyList<WindowsEventTargetStatus> _rows = [];
+    private int _machines, _failing;
+    private long _total;
+    private bool _busy;
+    private CancellationTokenSource? _ticker;
+
+    private const string ConfigSample = """
+        "Logrr": {
+          "WindowsEvents": {
+            "Enabled": true,
+            "Sources": [
+              { "Machine": ".",     "AppId": "windows-logrr",
+                "Channels": ["Application", "System"] },
+              { "Machine": "WEB01", "AppId": "windows-web01",
+                "Channels": ["Application", "System"], "MinimumLevel": "Warning" }
+            ]
+          }
+        }
+        """;
+
+    protected override void OnInitialized()
+    {
+        // Registered only when collection is enabled on a Windows host, so its absence is
+        // exactly what distinguishes "off" from "on but unavailable here".
+        _collector = Services.GetService<WindowsEventCollector>();
+        Refresh();
+
+        // Collection happens on a background timer, so without this the page would silently go
+        // stale while you watch it. Polling the in-memory status is cheap; only the cursor read
+        // touches the control DB, and that is one small query per tick.
+        if (_collector is not null)
+        {
+            _ticker = new CancellationTokenSource();
+            _ = TickAsync(_ticker.Token);
+        }
+    }
+
+    private async Task TickAsync(CancellationToken ct)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(ct))
+            {
+                await InvokeAsync(() => { Refresh(); StateHasChanged(); });
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Navigating away.
+        }
+    }
+
+    public void Dispose()
+    {
+        _ticker?.Cancel();
+        _ticker?.Dispose();
+    }
+
+    private void Refresh()
+    {
+        if (_collector is null)
+        {
+            return;
+        }
+        _rows = _collector.Status();
+        _machines = _rows.Select(r => r.Machine).Distinct(StringComparer.OrdinalIgnoreCase).Count();
+        _failing = _rows.Count(r => r.IsFailing);
+        _total = _rows.Sum(r => r.EventsCollected);
+    }
+
+    /// <summary>
+    /// Forces a poll rather than waiting out the interval — the thing you want immediately after
+    /// fixing a permission. The collector serialises passes internally, so this cannot double-read.
+    /// </summary>
+    private async Task CollectNow()
+    {
+        if (_collector is null || _busy)
+        {
+            return;
+        }
+        _busy = true;
+        try
+        {
+            await Task.Run(() => _collector.CollectOnce(CancellationToken.None));
+        }
+        finally
+        {
+            _busy = false;
+            Refresh();
+        }
+    }
+
+    private static string Ago(DateTimeOffset when)
+    {
+        var span = DateTimeOffset.UtcNow - when;
+        if (span < TimeSpan.Zero) { return "just now"; }
+        if (span.TotalSeconds < 60) { return $"{(int)span.TotalSeconds}s ago"; }
+        if (span.TotalMinutes < 60) { return $"{(int)span.TotalMinutes}m ago"; }
+        if (span.TotalHours < 24) { return $"{(int)span.TotalHours}h ago"; }
+        return when.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
+    }
+}

@@ -1,7 +1,7 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
-using Logrr.Core;
 using Logrr.Core.Filters;
+using Logrr.Core;
 using Logrr.Storage;
 
 namespace Logrr.Notify;

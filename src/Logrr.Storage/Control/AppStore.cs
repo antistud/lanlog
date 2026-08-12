@@ -8,12 +8,15 @@ namespace Logrr.Storage.Control;
 /// <summary>CRUD for the <c>apps</c> table.</summary>
 public sealed class AppStore(ControlDatabase db)
 {
+    /// <summary>Schema-qualified on SQL Server, bare on SQLite.</summary>
+    private string Table => db.T("apps");
+
     public void Create(AppRecord app)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = """
-            INSERT INTO apps (id, name, description, retention_days, max_size_mb,
+        cmd.CommandText = $"""
+            INSERT INTO {Table} (id, name, description, retention_days, max_size_mb,
                               minimum_level, indexed_properties, is_enabled, created_utc)
             VALUES (@id, @name, @desc, @ret, @max, @min, @idx, @en, @created);
             """;
@@ -33,7 +36,7 @@ public sealed class AppStore(ControlDatabase db)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT * FROM apps WHERE id = @id;";
+        cmd.CommandText = $"SELECT * FROM {Table} WHERE id = @id;";
         cmd.Add("@id", id);
         using var reader = cmd.ExecuteReader();
         return reader.Read() ? Map(reader) : null;
@@ -43,7 +46,7 @@ public sealed class AppStore(ControlDatabase db)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT * FROM apps ORDER BY name;";
+        cmd.CommandText = $"SELECT * FROM {Table} ORDER BY name;";
         using var reader = cmd.ExecuteReader();
         var apps = new List<AppRecord>();
         while (reader.Read())
@@ -57,8 +60,8 @@ public sealed class AppStore(ControlDatabase db)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = """
-            UPDATE apps SET name = @name, description = @desc, retention_days = @ret,
+        cmd.CommandText = $"""
+            UPDATE {Table} SET name = @name, description = @desc, retention_days = @ret,
               max_size_mb = @max, minimum_level = @min, indexed_properties = @idx,
               is_enabled = @en
             WHERE id = @id;

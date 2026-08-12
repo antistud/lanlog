@@ -2,6 +2,7 @@
 @attribute [Authorize]
 @rendermode InteractiveServer
 @inject Logrr.Storage.EventReader Reader
+@inject Logrr.Storage.TraceReader Traces
 @inject Logrr.Storage.Control.AppStore Apps
 @inject Logrr.Storage.Control.AckStore Acks
 @inject Logrr.Notify.TicketLinkStore TicketLinks
@@ -57,7 +58,11 @@ else
             @if (e.Template is not null) { <dt>Template</dt><dd class="mono-sm">@e.Template</dd> }
             @if (e.Source is not null) { <dt>Source</dt><dd class="mono-sm">@e.Source</dd> }
             @if (e.Machine is not null) { <dt>Machine</dt><dd class="mono-sm">@e.Machine</dd> }
-            @if (e.TraceId is not null) { <dt>Trace id</dt><dd class="mono-sm">@e.TraceId</dd> }
+            @if (e.TraceId is { } tid)
+            {
+                <dt>Trace id</dt>
+                <dd class="mono-sm"><a href="@TraceUrl(tid)" title="See the whole trace">@tid</a></dd>
+            }
             @if (e.EventType is not null)
             {
                 <dt>Event type</dt><dd class="mono-sm">@e.EventType</dd>
@@ -114,21 +119,34 @@ else
         }
     </div>
 
-    @if (_related.Count > 0)
+    @if (e.TraceId is { } traceId)
     {
         <div class="card">
-            <div class="card-head"><h3>Related by trace</h3><span class="badge">@_related.Count</span></div>
+            <div class="card-head">
+                <div>
+                    <h3>Same trace</h3>
+                    <span class="meta">Everything logged under this trace id in @AppId — the trace view adds the other apps.</span>
+                </div>
+                <div class="flex gap-2 items-center">
+                    <span class="badge">@_related.Count</span>
+                    <a class="btn sm" href="@TraceUrl(traceId)">View trace →</a>
+                </div>
+            </div>
             <div class="table-wrap" style="border:none">
                 <table class="data">
                     <tbody>
                         @foreach (var r in _related)
                         {
-                            <tr>
+                            <tr class="sev-row sev-@r.Level @(r.Id == e.Id ? "sel" : "")">
                                 <td class="mono-sm nowrap" style="width:180px">@r.Timestamp.ToLocalTime().ToString("HH:mm:ss.fff")</td>
                                 <td style="width:110px"><LevelChip Level="r.Level" /></td>
                                 <td class="truncate" style="max-width:520px">@r.Message</td>
-                                <td class="text-right" style="width:80px">@if (r.Id != e.Id) { <a href="@($"/apps/{AppId}/events/{r.Id}")">→</a> }</td>
+                                <td class="text-right" style="width:80px">@if (r.Id != e.Id) { <a href="@($"/apps/{AppId}/events/{r.Id}")">→</a> } else { <span class="badge accent">this</span> }</td>
                             </tr>
+                        }
+                        @if (_related.Count == 0)
+                        {
+                            <tr><td class="meta" style="padding:var(--sp-4)">No other events under this trace id in @AppId.</td></tr>
                         }
                     </tbody>
                 </table>
@@ -207,10 +225,18 @@ else
         }
         if (_event.TraceId is { } trace)
         {
-            var page = Reader.Query(new Logrr.Storage.EventQuery { AppId = AppId, Filter = $"TraceId = '{trace}'", Limit = 50 });
-            _related.AddRange(page.Events);
+            // This app's slice only — the trace view is where the cross-app picture lives.
+            var t = Traces.Read(trace, [AppId], near: _event.Timestamp, limit: 50);
+            _related.AddRange(t.Events.Select(x => x.Event));
         }
     }
+
+    /// <summary>
+    /// The trace screen, carrying where we came from: the app and event date the scan around,
+    /// and the row for this event is marked in the waterfall.
+    /// </summary>
+    private string TraceUrl(string traceId) =>
+        $"/traces/{Uri.EscapeDataString(traceId)}?app={Uri.EscapeDataString(AppId)}&event={Uri.EscapeDataString(EventId)}";
 
     private void LoadContext()
     {

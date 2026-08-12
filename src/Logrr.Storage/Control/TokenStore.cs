@@ -7,12 +7,15 @@ namespace Logrr.Storage.Control;
 /// <summary>CRUD + lookup for the <c>tokens</c> table (SPEC §5.2, §11).</summary>
 public sealed class TokenStore(ControlDatabase db)
 {
+    /// <summary>Schema-qualified on SQL Server, bare on SQLite.</summary>
+    private string Table => db.T("tokens");
+
     public void Create(TokenRecord token)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = """
-            INSERT INTO tokens (id, app_id, name, prefix, hash, scopes,
+        cmd.CommandText = $"""
+            INSERT INTO {Table} (id, app_id, name, prefix, hash, scopes,
                                 expires_utc, last_used_utc, revoked_utc, created_utc)
             VALUES (@id, @app, @name, @prefix, @hash, @scopes,
                     @expires, @lastUsed, @revoked, @created);
@@ -21,7 +24,7 @@ public sealed class TokenStore(ControlDatabase db)
         cmd.Add("@app", token.AppId);
         cmd.Add("@name", token.Name);
         cmd.Add("@prefix", token.Prefix);
-        cmd.Add("@hash", token.Hash);
+        cmd.AddBinary("@hash", token.Hash);
         cmd.Add("@scopes", (int)token.Scopes);
         cmd.Add("@expires", token.ExpiresUtc?.ToUnixTimeMilliseconds());
         cmd.Add("@lastUsed", token.LastUsedUtc?.ToUnixTimeMilliseconds());
@@ -35,7 +38,7 @@ public sealed class TokenStore(ControlDatabase db)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT * FROM tokens WHERE prefix = @prefix;";
+        cmd.CommandText = $"SELECT * FROM {Table} WHERE prefix = @prefix;";
         cmd.Add("@prefix", prefix);
         using var reader = cmd.ExecuteReader();
         return reader.Read() ? Map(reader) : null;
@@ -45,7 +48,7 @@ public sealed class TokenStore(ControlDatabase db)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT * FROM tokens WHERE app_id = @app ORDER BY created_utc DESC;";
+        cmd.CommandText = $"SELECT * FROM {Table} WHERE app_id = @app ORDER BY created_utc DESC;";
         cmd.Add("@app", appId);
         using var reader = cmd.ExecuteReader();
         var tokens = new List<TokenRecord>();
@@ -60,7 +63,7 @@ public sealed class TokenStore(ControlDatabase db)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "UPDATE tokens SET revoked_utc = @now WHERE id = @id;";
+        cmd.CommandText = $"UPDATE {Table} SET revoked_utc = @now WHERE id = @id;";
         cmd.Add("@now", now.ToUnixTimeMilliseconds());
         cmd.Add("@id", id);
         cmd.ExecuteNonQuery();
@@ -71,7 +74,7 @@ public sealed class TokenStore(ControlDatabase db)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "UPDATE tokens SET last_used_utc = @now WHERE id = @id;";
+        cmd.CommandText = $"UPDATE {Table} SET last_used_utc = @now WHERE id = @id;";
         cmd.Add("@now", now.ToUnixTimeMilliseconds());
         cmd.Add("@id", id);
         cmd.ExecuteNonQuery();

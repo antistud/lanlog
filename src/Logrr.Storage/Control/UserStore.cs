@@ -6,12 +6,15 @@ namespace Logrr.Storage.Control;
 /// <summary>CRUD for the <c>users</c> table (SPEC §11).</summary>
 public sealed class UserStore(ControlDatabase db)
 {
+    /// <summary>Schema-qualified on SQL Server, bare on SQLite.</summary>
+    private string Table => db.T("users");
+
     public void Create(UserRecord user)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = """
-            INSERT INTO users (id, username, password_hash, password_salt, windows_account, role,
+        cmd.CommandText = $"""
+            INSERT INTO {Table} (id, username, password_hash, password_salt, windows_account, role,
                                must_change_password, app_access, created_utc)
             VALUES (@id, @username, @hash, @salt, @win, @role, @must, @access, @created);
             """;
@@ -23,7 +26,7 @@ public sealed class UserStore(ControlDatabase db)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT * FROM users WHERE username = @u;";
+        cmd.CommandText = $"SELECT * FROM {Table} WHERE username = @u;";
         cmd.Add("@u", username);
         using var reader = cmd.ExecuteReader();
         return reader.Read() ? Map(reader) : null;
@@ -43,7 +46,7 @@ public sealed class UserStore(ControlDatabase db)
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText =
-            $"SELECT * FROM users WHERE {db.Dialect.CaseInsensitiveEquals("windows_account", "@w")};";
+            $"SELECT * FROM {Table} WHERE {db.Dialect.CaseInsensitiveEquals("windows_account", "@w")};";
         cmd.Add("@w", windowsAccount.Trim());
         using var reader = cmd.ExecuteReader();
         return reader.Read() ? Map(reader) : null;
@@ -53,7 +56,7 @@ public sealed class UserStore(ControlDatabase db)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT * FROM users ORDER BY username;";
+        cmd.CommandText = $"SELECT * FROM {Table} ORDER BY username;";
         using var reader = cmd.ExecuteReader();
         var users = new List<UserRecord>();
         while (reader.Read())
@@ -66,14 +69,14 @@ public sealed class UserStore(ControlDatabase db)
     public bool AnyExist()
     {
         using var conn = db.Open();
-        return Db.Scalar(conn, db.Dialect.AnyRowsScalar("users")) != 0;
+        return Db.Scalar(conn, db.Dialect.AnyRowsScalar(Table)) != 0;
     }
 
     public void Delete(string id)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "DELETE FROM users WHERE id = @id;";
+        cmd.CommandText = $"DELETE FROM {Table} WHERE id = @id;";
         cmd.Add("@id", id);
         cmd.ExecuteNonQuery();
     }
@@ -82,13 +85,13 @@ public sealed class UserStore(ControlDatabase db)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = """
-            UPDATE users SET password_hash = @hash, password_salt = @salt,
+        cmd.CommandText = $"""
+            UPDATE {Table} SET password_hash = @hash, password_salt = @salt,
                              must_change_password = @must
             WHERE id = @id;
             """;
-        cmd.Add("@hash", hash);
-        cmd.Add("@salt", salt);
+        cmd.AddBinary("@hash", hash);
+        cmd.AddBinary("@salt", salt);
         cmd.Add("@must", mustChange ? 1 : 0);
         cmd.Add("@id", id);
         cmd.ExecuteNonQuery();
@@ -108,7 +111,7 @@ public sealed class UserStore(ControlDatabase db)
 
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "UPDATE users SET windows_account = @w WHERE id = @id;";
+        cmd.CommandText = $"UPDATE {Table} SET windows_account = @w WHERE id = @id;";
         cmd.Add("@w", (object?)normalized);
         cmd.Add("@id", id);
         cmd.ExecuteNonQuery();
@@ -119,8 +122,8 @@ public sealed class UserStore(ControlDatabase db)
     {
         cmd.Add("@id", u.Id);
         cmd.Add("@username", u.Username);
-        cmd.Add("@hash", (object?)u.PasswordHash);
-        cmd.Add("@salt", (object?)u.PasswordSalt);
+        cmd.AddBinary("@hash", u.PasswordHash);
+        cmd.AddBinary("@salt", u.PasswordSalt);
         cmd.Add("@win", (object?)(string.IsNullOrWhiteSpace(u.WindowsAccount) ? null : u.WindowsAccount.Trim()));
         cmd.Add("@role", (int)u.Role);
         cmd.Add("@must", u.MustChangePassword ? 1 : 0);

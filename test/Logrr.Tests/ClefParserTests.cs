@@ -72,6 +72,32 @@ public class ClefParserTests
     }
 
     [Fact]
+    public void Span_shape_is_lifted_onto_columns_and_properties()
+    {
+        var line = """
+        {"@t":"2026-07-23T14:02:11Z","@mt":"GET /orders","@tr":"4bf92f","@sp":"00f0","@ps":"a1b2","@st":"2026-07-23T14:02:10Z"}
+        """;
+        var e = ClefParser.Parse(Obj(line), Now).Event!;
+
+        Assert.Equal("4bf92f", e.TraceId);
+        Assert.Equal("00f0", e.SpanId);
+        // No columns for these two — they ride in the property bag (SpanFields).
+        Assert.Equal("a1b2", e.Properties[SpanFields.ParentSpanId]);
+        Assert.Equal("2026-07-23T14:02:10Z", e.Properties[SpanFields.SpanStart]);
+    }
+
+    [Fact]
+    public void Non_string_ids_are_ignored_rather_than_thrown_on()
+    {
+        var line = """{"@t":"2026-07-23T14:02:11Z","@mt":"x","@tr":42,"@sp":null}""";
+        var r = ClefParser.Parse(Obj(line), Now);
+
+        Assert.True(r.Ok);
+        Assert.Null(r.Event!.TraceId);
+        Assert.Null(r.Event!.SpanId);
+    }
+
+    [Fact]
     public void Absent_timestamp_uses_server_clock()
     {
         var line = """{"@mt":"x"}""";

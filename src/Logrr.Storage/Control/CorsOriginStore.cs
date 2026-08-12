@@ -8,11 +8,14 @@ public sealed record CorsOrigin(string Origin, DateTimeOffset CreatedUtc);
 /// <summary>CRUD for the <c>cors_origins</c> table. Origins are stored normalised (see helper).</summary>
 public sealed class CorsOriginStore(ControlDatabase db)
 {
+    /// <summary>Schema-qualified on SQL Server, bare on SQLite.</summary>
+    private string Table => db.T("cors_origins");
+
     public IReadOnlyList<CorsOrigin> List()
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT origin, created_utc FROM cors_origins ORDER BY origin;";
+        cmd.CommandText = $"SELECT origin, created_utc FROM {Table} ORDER BY origin;";
         using var reader = cmd.ExecuteReader();
         var list = new List<CorsOrigin>();
         while (reader.Read())
@@ -30,12 +33,12 @@ public sealed class CorsOriginStore(ControlDatabase db)
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = db.Dialect.IsSqlServer
-            ? """
-              INSERT INTO cors_origins (origin, created_utc)
+            ? $"""
+              INSERT INTO {Table} (origin, created_utc)
               SELECT @o, @c
-              WHERE NOT EXISTS (SELECT 1 FROM cors_origins WITH (UPDLOCK, SERIALIZABLE) WHERE origin = @o);
+              WHERE NOT EXISTS (SELECT 1 FROM {Table} WITH (UPDLOCK, SERIALIZABLE) WHERE origin = @o);
               """
-            : "INSERT OR IGNORE INTO cors_origins (origin, created_utc) VALUES (@o, @c);";
+            : $"INSERT OR IGNORE INTO {Table} (origin, created_utc) VALUES (@o, @c);";
         cmd.Add("@o", origin);
         cmd.Add("@c", now.ToUnixTimeMilliseconds());
         return cmd.ExecuteNonQuery() > 0;
@@ -45,7 +48,7 @@ public sealed class CorsOriginStore(ControlDatabase db)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "DELETE FROM cors_origins WHERE origin = @o;";
+        cmd.CommandText = $"DELETE FROM {Table} WHERE origin = @o;";
         cmd.Add("@o", origin);
         cmd.ExecuteNonQuery();
     }

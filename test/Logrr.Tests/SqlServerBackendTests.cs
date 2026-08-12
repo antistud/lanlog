@@ -403,5 +403,52 @@ public class SqlServerBackendTests : IDisposable
         Assert.Equal(1, occurrences.ResetForRule("r1"));
     }
 
+    /// <summary>
+    /// Rules carry three <c>BIT</c> columns that every store binds as the integers 0 and 1, and
+    /// <c>EnabledForApp</c> filters on <c>is_enabled = 1</c> — the place where a SQLite-shaped
+    /// boolean would quietly stop matching on SQL Server.
+    /// </summary>
+    [SqlServerFact]
+    public void Rules_round_trip_their_boolean_columns()
+    {
+        var control = new ControlDatabase(Dialect);
+        control.Initialize();
+
+        new DestinationStore(control).Create(new Destination
+        {
+            Id = "d1", Name = "Ops", Url = "https://hooks.internal/x",
+            BodyTemplate = "{}", IsEnabled = true, CreatedUtc = _t0,
+        });
+
+        var rules = new RuleStore(control);
+        var rule = new Rule
+        {
+            Id = "r1", Name = "Errors", AppId = "billing", Filter = "Level >= Error",
+            MinimumLevel = LogLevel.Error, TriggerType = TriggerType.EveryMatch,
+            DedupeKeyTemplate = "{{event.eventType}}", CooldownMinutes = 60,
+            DestinationId = "d1", MaxFiresPerHour = 20,
+            IsDryRun = true, IsEnabled = true, CreatedUtc = _t0,
+        };
+        rules.Create(rule);
+
+        var loaded = rules.Get("r1")!;
+        Assert.True(loaded.IsDryRun);
+        Assert.True(loaded.IsEnabled);
+        Assert.Equal("Level >= Error", loaded.Filter);
+        Assert.Single(rules.EnabledForApp("billing"));
+
+        // An all-apps rule applies to every app; a disabled one applies to none.
+        rules.Update(rule with { AppId = null });
+        Assert.Single(rules.EnabledForApp("anything-else"));
+
+        rules.AutoDisable("r1", "blew the hourly cap");
+        Assert.Empty(rules.EnabledForApp("billing"));
+        Assert.Equal("blew the hourly cap", rules.Get("r1")!.AutoDisabledReason);
+
+        rules.SetEnabled("r1", true);
+        Assert.Null(rules.Get("r1")!.AutoDisabledReason);
+        Assert.Single(rules.List());
+    }
+
     public void Dispose() => _db?.Dispose();
 }

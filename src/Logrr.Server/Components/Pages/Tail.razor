@@ -98,7 +98,11 @@
                                     <dt>Message</dt><dd>@row.Event.Message</dd>
                                     @if (row.Event.Template is not null) { <dt>Template</dt><dd class="mono-sm">@row.Event.Template</dd> }
                                     @if (row.Event.Source is not null) { <dt>Source</dt><dd class="mono-sm">@row.Event.Source</dd> }
-                                    @if (row.Event.TraceId is not null) { <dt>Trace</dt><dd class="mono-sm">@row.Event.TraceId</dd> }
+                                    @if (row.Event.TraceId is { } tid)
+                                    {
+                                        <dt>Trace</dt>
+                                        <dd class="mono-sm"><a href="@TraceUrl(tid, row.Event.Id)" @onclick:stopPropagation="true">@tid</a></dd>
+                                    }
                                 </div>
                                 @if (row.Event.Exception is not null)
                                 {
@@ -110,6 +114,11 @@
                                 }
                                 <div class="flex gap-2 items-center">
                                     <a class="btn ghost sm" href="@($"/apps/{AppId}/events/{row.Event.Id}")">Open event</a>
+                                    @if (row.Event.TraceId is { } trace)
+                                    {
+                                        <a class="btn ghost sm" href="@TraceUrl(trace, row.Event.Id)"
+                                           title="Every event of this request, across apps">View trace</a>
+                                    }
                                     @if (row.Event is { Level: >= LogLevel.Error, EventType: not null })
                                     {
                                         @if (AckedByType(row.Event))
@@ -170,6 +179,9 @@
     }
 
     private static long Micros(DateTimeOffset ts) => Logrr.Storage.EventPartition.UnixMicros(ts);
+
+    private string TraceUrl(string traceId, string eventId) =>
+        $"/traces/{Uri.EscapeDataString(traceId)}?app={Uri.EscapeDataString(AppId)}&event={Uri.EscapeDataString(eventId)}";
 
     /// <summary>Acked by its own event type — the only ack this row can undo on its own.</summary>
     private bool AckedByType(LogEventDto e) =>

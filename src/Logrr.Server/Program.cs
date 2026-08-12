@@ -135,6 +135,7 @@ builder.Services.AddSingleton<UserStore>();
 builder.Services.AddSingleton<SavedSearchStore>();
 builder.Services.AddSingleton<AckStore>();
 builder.Services.AddSingleton<EventReader>();
+builder.Services.AddSingleton<TraceReader>();
 builder.Services.AddSingleton<StatsReader>();
 builder.Services.AddSingleton<RetentionMaintenance>();
 

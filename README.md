@@ -79,6 +79,27 @@ already use `Serilog.Sinks.Seq`, you can point it at Logrr instead and skip the 
 
 Build the package with `dotnet pack src/Logrr.Client -c Release`.
 
+## Following one request across apps
+
+Any event that carries a trace id gets a clickable trace id — in live tail, in search, and on
+event detail. It opens `/traces/{traceId}`: every event under that id, **across every app you
+can read**, oldest first, as a waterfall you can read a request off.
+
+Nothing to configure. If your apps already flow a trace id — ASP.NET Core's `Activity` does
+this by default, and `Serilog.Sinks.Seq`/`Logrr.Client` send it as CLEF `@tr` — the web tier's
+and the worker's halves of the same request already line up on one screen.
+
+Apps that also emit spans (`@ps` parent span, `@st` span start — what `SerilogTracing` writes)
+get the extra dimension: rows nest inside the span they were logged in, and each span is drawn
+at its real offset and duration. Apps that emit only a trace id get the same screen, flat.
+
+```bash
+curl "http://localhost:5199/api/v1/traces/4bf92f3577b34da6" -H "X-Logrr-ApiKey: lg_billing_..."
+```
+
+A token sees only its own app; a signed-in browser session sees every app. Add `?appId=web` to
+narrow it, and `?near=2026-07-23T14:02:11Z` to point the scan at the right day.
+
 ## Collecting Windows event logs
 
 Logrr can pull the Application/System/Security logs from this box and any other Windows
@@ -120,7 +141,7 @@ with dedupe/threshold/cooldown and every §10.7 safety valve, the durable delive
 with backoff/circuit-breaker/HMAC, first-run bootstrap, and the IIS publish profile.
 
 The Blazor UI implements all §9 screens — sign-in, apps overview (live tiles with
-sparklines), live tail, search, event detail, app settings, tokens, destinations (with
+sparklines), live tail, search, event detail, cross-app trace view, app settings, tokens, destinations (with
 template editor + live preview + test), rules, deliveries, and admin — on a theme-aware
 (light + dark) design system in `wwwroot/css/logrr.css`. See `docs/SPEC.md` §15 for the
 full phase plan.

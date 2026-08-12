@@ -51,8 +51,30 @@ public sealed class WindowsEventSourceOptions
     /// <summary>Display name used only when auto-creating the app.</summary>
     public string? AppName { get; init; }
 
-    /// <summary>Log names to read, e.g. <c>Application</c>, <c>System</c>, <c>Security</c>.</summary>
-    public IReadOnlyList<string> Channels { get; init; } = ["Application", "System"];
+    /// <summary>
+    /// Log names to read, e.g. <c>Application</c>, <c>System</c>, <c>Security</c>. Empty means
+    /// the default pair — read <see cref="EffectiveChannels"/>, never this, when collecting.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately defaulted to empty rather than to the pair itself: the configuration binder
+    /// *appends* to a collection property's existing contents instead of replacing them, so a
+    /// non-empty default would leave anyone who sets <c>Channels</c> collecting the defaults as
+    /// well as their own list — every channel twice.
+    /// </remarks>
+    public IReadOnlyList<string> Channels { get; init; } = [];
+
+    /// <summary>
+    /// The channels actually collected: the configured list, or the default pair when it is
+    /// empty. De-duplicated, because listing a channel twice would poll it twice for nothing.
+    /// </summary>
+    public IReadOnlyList<string> EffectiveChannels =>
+        (Channels.Count == 0 ? DefaultChannels : Channels)
+        .Where(c => !string.IsNullOrWhiteSpace(c))
+        .Select(c => c.Trim())
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToList();
+
+    public static readonly IReadOnlyList<string> DefaultChannels = ["Application", "System"];
 
     /// <summary>
     /// Minimum level used only when auto-creating the app. Afterwards the app's own setting

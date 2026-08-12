@@ -9,12 +9,15 @@ public sealed record SavedSearch(
 /// <summary>CRUD for the <c>saved_searches</c> table (SPEC §7 explore).</summary>
 public sealed class SavedSearchStore(ControlDatabase db)
 {
+    /// <summary>Schema-qualified on SQL Server, bare on SQLite.</summary>
+    private string Table => db.T("saved_searches");
+
     public IReadOnlyList<SavedSearch> ListByApp(string appId)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText =
-            "SELECT id, app_id, name, query, created_by, created_utc FROM saved_searches " +
+            $"SELECT id, app_id, name, query, created_by, created_utc FROM {Table} " +
             "WHERE app_id = @a ORDER BY name;";
         cmd.Add("@a", appId);
         using var reader = cmd.ExecuteReader();
@@ -34,7 +37,7 @@ public sealed class SavedSearchStore(ControlDatabase db)
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText =
-            "INSERT INTO saved_searches (id, app_id, name, query, created_by, created_utc) " +
+            $"INSERT INTO {Table} (id, app_id, name, query, created_by, created_utc) " +
             "VALUES (@id, @a, @n, @q, @by, @c);";
         cmd.Add("@id", s.Id);
         cmd.Add("@a", s.AppId);
@@ -49,7 +52,7 @@ public sealed class SavedSearchStore(ControlDatabase db)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "DELETE FROM saved_searches WHERE id = @id;";
+        cmd.CommandText = $"DELETE FROM {Table} WHERE id = @id;";
         cmd.Add("@id", id);
         cmd.ExecuteNonQuery();
     }

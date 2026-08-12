@@ -9,6 +9,7 @@
 @inject Logrr.Storage.StoragePaths Paths
 @inject Logrr.Storage.Control.UserStore Users
 @inject Logrr.Server.WindowsAuthOptions WindowsAuth
+@inject Logrr.Server.WindowsEvents.WindowsEventOptions WindowsEvents
 @inject Logrr.Server.Ingest.IngestCorsPolicy Cors
 @inject Microsoft.Extensions.Options.IOptions<Logrr.Server.ServerOptions> Options
 
@@ -125,6 +126,25 @@
                 }
             </tbody>
         </table>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-head">
+        <div>
+            <h3>Windows event collection</h3>
+            <div class="meta">
+                @if (!WindowsEvents.Enabled)
+                {
+                    <text>Off. Logrr can read the Application/System logs from this box and other machines on the LAN, without installing anything on them.</text>
+                }
+                else
+                {
+                    <text>@WindowsEvents.Sources.Count machine(s), polling every @WindowsEvents.PollIntervalSeconds s.</text>
+                }
+            </div>
+        </div>
+        <a class="btn ghost sm" href="/admin/windows-events">Open</a>
     </div>
 </div>
 

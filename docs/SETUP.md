@@ -211,13 +211,83 @@ of …` means it is working. A warning naming a machine and channel means it cou
 one — almost always (b) or (c) above; it retries every poll and logs again once it recovers,
 and the other machines keep collecting meanwhile.
 
-## 10. Backup
+## 10. SQL Server storage (optional)
+
+By default Logrr keeps everything in SQLite files under the data directory, which is why the
+steps above never mention a database server. Point it at SQL Server instead if you already
+back up, monitor and cluster one and want Logrr's data inside that perimeter. **You do not
+need this** — the default is not a lesser option, it is the intended one for a single box.
+
+**a. Create an empty database and grant rights.** Logrr creates its own schema and tables on
+first start; it needs `db_ddladmin` + `db_datareader` + `db_datawriter`, or simply
+`db_owner`, on that database and nothing at server level:
+
+```sql
+CREATE DATABASE Logrr;
+GO
+USE Logrr;
+CREATE USER [IIS APPPOOL\Logrr] FOR LOGIN [IIS APPPOOL\Logrr];
+ALTER ROLE db_owner ADD MEMBER [IIS APPPOOL\Logrr];
+```
+
+Under IIS the app pool connects as the machine account (`DOMAIN\SERVER01$`) when it reaches
+another box, and as `IIS APPPOOL\<pool>` only for a local instance — create the login for
+whichever applies. A SQL login works too; put it in the connection string.
+
+**b. Set the connection string** (`appsettings.json`):
+
+```json
+"Logrr": {
+  "Storage": {
+    "ConnectionString": "Server=SQL01;Database=Logrr;Integrated Security=true;Encrypt=true;TrustServerCertificate=true;",
+    "Schema": "logrr"
+  }
+}
+```
+
+`LOGRR_SQL_CONNECTION` overrides it, which is the tidier option since it keeps a credential
+out of the published folder. `ConnectionStrings:Logrr` is read as well.
+
+**`Encrypt` defaults to true** in the current client. Against an internal SQL Server with a
+self-signed certificate that fails the connection outright with *"A connection was
+successfully established … but then an error occurred during the login process"* — add
+`TrustServerCertificate=true` (or install a trusted certificate on the server).
+
+**c. Restart and check the log.** `logrr-internal.log` names the backend on every start:
+
+```
+Logrr storage backend: SQL Server SQL01, database Logrr, schema logrr
+```
+
+If it says *SQLite files under C:\Logrr*, the connection string did not reach the app — that
+line is the fastest way to tell configuration from connectivity.
+
+### What changes
+
+- Events live in one table per app per UTC day, `[logrr].[events_{app}_{yyyyMMdd}]`.
+  Retention still drops whole tables, so it stays cheap.
+- **Full-text search is a `LIKE` scan, not FTS5.** Every whitespace-separated term must
+  appear, and there is no stemming — searching `connect` will not find `connection`. Scans
+  are bounded to one app-day, so this is fine at LAN volumes and would not be at scale.
+- The **data directory is still required** and still needs write access: the Data Protection
+  `keys\` folder and `logrr-internal.log` live there regardless. §5 still applies.
+- The free-disk guard no longer applies — the database server's storage is yours to watch.
+  Per-app retention and size caps work as before.
+
+### Backup
+
+The database is your backup unit; the data directory still holds `keys\`, and **losing
+`keys\` still makes destination secrets unrecoverable**. Back up both.
+
+## 11. Backup
 
 Copy any partition file that isn't today's, plus `control.db` and the **`keys\`** folder.
 **If `keys\` is lost, destination webhook secrets are unrecoverable** (SPEC §11, §13).
 For the live partition, use `sqlite3 .backup`.
 
-## 11. Upgrade
+(With the SQL Server backend of §10, back up the database instead — but still copy `keys\`.)
+
+## 12. Upgrade
 
 Publish to a new `logrr_{build}` folder, repoint the site's physical path, recycle, and
 delete the previous folder on the next deploy. The data directory is untouched.

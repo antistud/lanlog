@@ -49,6 +49,15 @@ public static class QueryEndpoints
                 return ev is null ? Results.NotFound() : Results.Ok(ev);
             }));
 
+        // Not under /apps/{appId}: a trace crosses services, so it is read across every app the
+        // caller may read (SPEC §7). `appId` narrows it back to one app when that is what you
+        // want, and is implied for a token, which can only ever see its own.
+        app.MapGet("/api/v1/traces/{traceId}", (
+            string traceId, HttpContext http, TokenAuthenticator auth, AppStore apps, TraceReader traces,
+            string? appId, string? near, int? limit) =>
+            RequireReadApps(http, auth, apps, appId, readable =>
+                Results.Ok(traces.Read(traceId, readable, ParseTime(near), limit ?? TraceReader.DefaultLimit))));
+
         app.MapGet("/api/v1/apps/{appId}/stats", (
             string appId, HttpContext http, TokenAuthenticator auth, StatsReader stats) =>
             RequireRead(http, auth, appId, () =>
@@ -118,6 +127,44 @@ public static class QueryEndpoints
         if (http.User.Identity?.IsAuthenticated == true)
         {
             return handler();
+        }
+
+        return Results.StatusCode(StatusCodes.Status401Unauthorized);
+    }
+
+    /// <summary>
+    /// As <see cref="RequireRead"/>, but for a read that spans apps: the handler is given the
+    /// set the caller is allowed to see. A token sees exactly its own app — never the whole
+    /// estate — and a UI session sees every app unless it asked for one.
+    /// </summary>
+    private static IResult RequireReadApps(
+        HttpContext http, TokenAuthenticator auth, AppStore apps, string? appId,
+        Func<IReadOnlyList<string>, IResult> handler)
+    {
+        var hasTokenHeader = http.Request.Headers.ContainsKey("X-Logrr-ApiKey")
+            || http.Request.Headers.ContainsKey("X-Seq-ApiKey")
+            || http.Request.Headers.ContainsKey("Authorization");
+
+        if (hasTokenHeader)
+        {
+            var result = auth.Authenticate(http, TokenScopes.Read);
+            if (!result.Ok)
+            {
+                return result.Failure == AuthFailure.Forbidden
+                    ? Results.StatusCode(StatusCodes.Status403Forbidden)
+                    : Results.StatusCode(StatusCodes.Status401Unauthorized);
+            }
+            var tokenApp = result.Context!.App.Id;
+            if (appId is not null && appId != tokenApp)
+            {
+                return Results.StatusCode(StatusCodes.Status403Forbidden);
+            }
+            return handler([tokenApp]);
+        }
+
+        if (http.User.Identity?.IsAuthenticated == true)
+        {
+            return handler(appId is not null ? [appId] : apps.List().Select(a => a.Id).ToList());
         }
 
         return Results.StatusCode(StatusCodes.Status401Unauthorized);

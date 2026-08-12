@@ -5,7 +5,12 @@
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- Must stay false: Microsoft.Data.SqlClient throws
+         "Globalization Invariant Mode is not supported" from SqlConnection.Open(), so the
+         optional SQL Server backend (SPEC §4.7) simply cannot connect in invariant mode. The
+         failure is at connect time, not build time, so turning this back on would ship a build
+         where the SQLite backend works and the SQL Server one dies on first use. -->
+    <InvariantGlobalization>false</InvariantGlobalization>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
     <!-- Deployment target is win-x64 self-contained (see docs/SPEC.md §2).

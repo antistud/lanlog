@@ -2,6 +2,9 @@ using Logrr.Storage.Sql;
 
 namespace Logrr.Storage.Control;
 
+/// <summary>A stored high-water mark, as shown on the collection status page.</summary>
+public sealed record WinlogCursor(string Machine, string Channel, long LastRecordId, DateTimeOffset UpdatedUtc);
+
 /// <summary>
 /// High-water marks for agentless Windows Event Log collection (SPEC §6.4): the last
 /// <c>EventRecordID</c> shipped per (machine, channel). Keys are normalised to lower case
@@ -10,15 +13,40 @@ namespace Logrr.Storage.Control;
 /// </summary>
 public sealed class WinlogCursorStore(ControlDatabase db)
 {
+    /// <summary>Schema-qualified on SQL Server, bare on SQLite.</summary>
+    private string Table => db.T("winlog_cursors");
+
     public long? Get(string machine, string channel)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT last_record_id FROM winlog_cursors WHERE machine = @m AND channel = @c;";
+        cmd.CommandText = $"SELECT last_record_id FROM {Table} WHERE machine = @m AND channel = @c;";
         cmd.Add("@m", Key(machine));
         cmd.Add("@c", Key(channel));
         var value = cmd.ExecuteScalar();
         return value is null or DBNull ? null : Convert.ToInt64(value);
+    }
+
+    /// <summary>Every cursor, for the admin status view. The table has one row per collected channel.</summary>
+    public IReadOnlyList<WinlogCursor> List()
+    {
+        using var conn = db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = $"""
+            SELECT machine, channel, last_record_id, updated_utc
+            FROM {Table} ORDER BY machine, channel;
+            """;
+        using var reader = cmd.ExecuteReader();
+        var list = new List<WinlogCursor>();
+        while (reader.Read())
+        {
+            list.Add(new WinlogCursor(
+                reader.GetString(0),
+                reader.GetString(1),
+                Convert.ToInt64(reader.GetValue(2)),
+                DateTimeOffset.FromUnixTimeMilliseconds(Convert.ToInt64(reader.GetValue(3)))));
+        }
+        return list;
     }
 
     public void Set(string machine, string channel, long lastRecordId, DateTimeOffset now)
@@ -28,15 +56,15 @@ public sealed class WinlogCursorStore(ControlDatabase db)
         // Single-writer table (only the collector touches it), so the plain update-then-insert
         // upsert is enough on SQL Server and needs no MERGE or lock hint.
         cmd.CommandText = db.Dialect.IsSqlServer
-            ? """
-              UPDATE winlog_cursors SET last_record_id = @r, updated_utc = @u
+            ? $"""
+              UPDATE {Table} SET last_record_id = @r, updated_utc = @u
               WHERE machine = @m AND channel = @c;
               IF @@ROWCOUNT = 0
-                INSERT INTO winlog_cursors (machine, channel, last_record_id, updated_utc)
+                INSERT INTO {Table} (machine, channel, last_record_id, updated_utc)
                 VALUES (@m, @c, @r, @u);
               """
-            : """
-              INSERT INTO winlog_cursors (machine, channel, last_record_id, updated_utc)
+            : $"""
+              INSERT INTO {Table} (machine, channel, last_record_id, updated_utc)
               VALUES (@m, @c, @r, @u)
               ON CONFLICT(machine, channel) DO UPDATE SET
                 last_record_id = excluded.last_record_id,

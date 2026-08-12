@@ -1,5 +1,5 @@
-using Logrr.Storage.Control;
 using System.Data.Common;
+using Logrr.Storage.Control;
 using Logrr.Storage.Sql;
 
 namespace Logrr.Notify;
@@ -7,6 +7,9 @@ namespace Logrr.Notify;
 /// <summary>The durable delivery queue (SPEC §10.5). A webhook outage delays, never loses.</summary>
 public sealed class DeliveryStore(ControlDatabase db)
 {
+    /// <summary>Schema-qualified on SQL Server, bare on SQLite.</summary>
+    private string Table => db.T("deliveries");
+
     public void Enqueue(Delivery d) => Upsert(d);
 
     public void Update(Delivery d) => Upsert(d);
@@ -18,16 +21,16 @@ public sealed class DeliveryStore(ControlDatabase db)
         cmd.CommandText = db.Dialect.IsSqlServer
             // The same lock-then-insert shape as the other upserts: the dispatcher writes an
             // attempt result while a rule may be enqueuing the same delivery id.
-            ? """
+            ? $"""
               BEGIN TRANSACTION;
-              UPDATE deliveries WITH (UPDLOCK, SERIALIZABLE)
+              UPDATE {Table} WITH (UPDLOCK, SERIALIZABLE)
                 SET attempt=@attempt, next_attempt_utc=@next, status=@status,
                     request_body=@body, subject=@subject, response_status=@respStatus,
                     response_snippet=@respSnippet,
                     ticket_id=@ticketId, ticket_url=@ticketUrl, error=@error
                 WHERE id=@id;
               IF @@ROWCOUNT = 0
-                INSERT INTO deliveries (id, destination_id, rule_id, app_id, source, event_type,
+                INSERT INTO {Table} (id, destination_id, rule_id, app_id, source, event_type,
                   created_utc, attempt, next_attempt_utc, status, request_body, subject,
                   response_status, response_snippet, ticket_id, ticket_url, error)
                 VALUES (@id, @dest, @rule, @app, @source, @eventType, @created,
@@ -35,8 +38,8 @@ public sealed class DeliveryStore(ControlDatabase db)
                   @ticketId, @ticketUrl, @error);
               COMMIT;
               """
-            : """
-              INSERT INTO deliveries (id, destination_id, rule_id, app_id, source, event_type, created_utc,
+            : $"""
+              INSERT INTO {Table} (id, destination_id, rule_id, app_id, source, event_type, created_utc,
                 attempt, next_attempt_utc, status, request_body, subject, response_status, response_snippet,
                 ticket_id, ticket_url, error)
               VALUES (@id, @dest, @rule, @app, @source, @eventType, @created,
@@ -71,7 +74,7 @@ public sealed class DeliveryStore(ControlDatabase db)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT * FROM deliveries WHERE id = @id;";
+        cmd.CommandText = $"SELECT * FROM {Table} WHERE id = @id;";
         cmd.P("@id", id);
         using var r = cmd.ExecuteReader();
         return r.Read() ? Map(r) : null;
@@ -83,7 +86,7 @@ public sealed class DeliveryStore(ControlDatabase db)
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = $"""
-            SELECT * FROM deliveries
+            SELECT * FROM {Table}
             WHERE status = @pending AND (next_attempt_utc IS NULL OR next_attempt_utc <= @now)
             ORDER BY created_utc
             {db.Dialect.LimitClause("@limit")};
@@ -109,7 +112,7 @@ public sealed class DeliveryStore(ControlDatabase db)
         if (to is { } t) { where += " AND created_utc <= @to"; cmd.P("@to", t.Ms()); }
         cmd.P("@limit", limit);
         cmd.CommandText =
-            $"SELECT * FROM deliveries WHERE {where} ORDER BY created_utc DESC " +
+            $"SELECT * FROM {Table} WHERE {where} ORDER BY created_utc DESC " +
             $"{db.Dialect.LimitClause("@limit")};";
         using var r = cmd.ExecuteReader();
         var list = new List<Delivery>();
@@ -122,8 +125,8 @@ public sealed class DeliveryStore(ControlDatabase db)
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = destinationId is null
-            ? "SELECT COUNT(*) FROM deliveries WHERE created_utc >= @since;"
-            : "SELECT COUNT(*) FROM deliveries WHERE created_utc >= @since AND destination_id = @dest;";
+            ? $"SELECT COUNT(*) FROM {Table} WHERE created_utc >= @since;"
+            : $"SELECT COUNT(*) FROM {Table} WHERE created_utc >= @since AND destination_id = @dest;";
         cmd.P("@since", since.Ms());
         if (destinationId is not null) cmd.P("@dest", destinationId);
         return Convert.ToInt32(cmd.ExecuteScalar());
@@ -133,7 +136,7 @@ public sealed class DeliveryStore(ControlDatabase db)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT COUNT(*) FROM deliveries WHERE rule_id = @r AND created_utc >= @since;";
+        cmd.CommandText = $"SELECT COUNT(*) FROM {Table} WHERE rule_id = @r AND created_utc >= @since;";
         cmd.P("@r", ruleId);
         cmd.P("@since", since.Ms());
         return Convert.ToInt32(cmd.ExecuteScalar());
@@ -143,7 +146,7 @@ public sealed class DeliveryStore(ControlDatabase db)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT COUNT(*) FROM deliveries WHERE status = @s;";
+        cmd.CommandText = $"SELECT COUNT(*) FROM {Table} WHERE status = @s;";
         cmd.P("@s", (int)status);
         return Convert.ToInt32(cmd.ExecuteScalar());
     }

@@ -1,5 +1,5 @@
-using Logrr.Storage.Control;
 using System.Data.Common;
+using Logrr.Storage.Control;
 using Logrr.Storage.Sql;
 
 namespace Logrr.Notify;
@@ -7,12 +7,15 @@ namespace Logrr.Notify;
 /// <summary>Links between event types and created tickets, for grid badges (SPEC §10.6).</summary>
 public sealed class TicketLinkStore(ControlDatabase db)
 {
+    /// <summary>Schema-qualified on SQL Server, bare on SQLite.</summary>
+    private string Table => db.T("ticket_links");
+
     public void Create(TicketLink link)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = """
-            INSERT INTO ticket_links (id, app_id, event_type, dedupe_key, event_id,
+        cmd.CommandText = $"""
+            INSERT INTO {Table} (id, app_id, event_type, dedupe_key, event_id,
               ticket_id, ticket_url, delivery_id, created_by, created_utc)
             VALUES (@id, @app, @type, @dedupe, @event, @ticketId, @ticketUrl, @delivery, @by, @created);
             """;
@@ -33,7 +36,7 @@ public sealed class TicketLinkStore(ControlDatabase db)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT * FROM ticket_links WHERE app_id = @app ORDER BY created_utc DESC;";
+        cmd.CommandText = $"SELECT * FROM {Table} WHERE app_id = @app ORDER BY created_utc DESC;";
         cmd.P("@app", appId);
         using var r = cmd.ExecuteReader();
         var list = new List<TicketLink>();
@@ -49,8 +52,8 @@ public sealed class TicketLinkStore(ControlDatabase db)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = """
-            SELECT event_type, ticket_url FROM ticket_links
+        cmd.CommandText = $"""
+            SELECT event_type, ticket_url FROM {Table}
             WHERE app_id = @app AND event_type IS NOT NULL AND ticket_url IS NOT NULL
             ORDER BY created_utc;
             """;
@@ -69,7 +72,7 @@ public sealed class TicketLinkStore(ControlDatabase db)
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = $"""
-            SELECT * FROM ticket_links WHERE app_id = @app AND event_type = @type
+            SELECT * FROM {Table} WHERE app_id = @app AND event_type = @type
             ORDER BY created_utc DESC {db.Dialect.LimitClause(1)};
             """;
         cmd.P("@app", appId);

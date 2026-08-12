@@ -45,6 +45,13 @@ public abstract class SqlDialect
 
     public abstract void SetSchemaVersion(DbConnection conn, long version);
 
+    /// <summary>
+    /// A control table as it must be written in a statement. SQL Server resolves an unqualified
+    /// name against the connecting login's default schema — normally <c>dbo</c> — so anything
+    /// Logrr creates in its own schema has to be named in full or it simply is not found.
+    /// </summary>
+    public abstract string ControlTable(string table);
+
     // ---- Partitions -------------------------------------------------------------------
 
     /// <summary>The table an app-day's events live in, as written in a <c>FROM</c> clause.</summary>

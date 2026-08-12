@@ -466,6 +466,25 @@ pre.code { background: var(--surface-2); border: 1px solid var(--border); border
 .linkish { background: none; border: 0; color: var(--accent); cursor: pointer; font-size: var(--fs-sm); padding: 0 0 0 6px; }
 .linkish:hover { text-decoration: underline; }
 
+/* ---- Trace waterfall --------------------------------------------------- */
+.trace-table { table-layout: fixed; }
+.trace-table td { padding-top: var(--sp-2); padding-bottom: var(--sp-2); vertical-align: middle; }
+.trace-indent { display: inline-block; height: 1px; vertical-align: middle; }
+.trace-glyph { color: var(--ink-3); margin-right: 5px; font-size: var(--fs-sm); }
+
+/* One track per row, spanning the same width in every row, so bars line up as a waterfall. */
+.trace-track { position: relative; height: 14px; border-radius: var(--r-sm); background: var(--surface-2); min-width: 120px; }
+.trace-bar { position: absolute; top: 3px; height: 8px; border-radius: var(--r-full); background: var(--ink-3); }
+.trace-point { position: absolute; top: 2px; width: 3px; height: 10px; border-radius: 2px; background: var(--ink-3); }
+
+/* Level colours, flat fills — the chip styles next to them carry the label. */
+.tb-Verbose     { background: var(--lvl-verbose); }
+.tb-Debug       { background: var(--lvl-debug); }
+.tb-Information { background: var(--lvl-info); }
+.tb-Warning     { background: var(--lvl-warning); }
+.tb-Error       { background: var(--lvl-error); }
+.tb-Fatal       { background: var(--lvl-fatal); }
+
 /* Saved searches bar */
 .savedbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: var(--sp-3); font-size: var(--fs-sm); }
 .savedchip { display: inline-flex; align-items: center; border: 1px solid var(--border); border-radius: 999px; overflow: hidden; }

@@ -1,6 +1,6 @@
+using System.Data.Common;
 using Logrr.Contracts;
 using Logrr.Storage.Control;
-using System.Data.Common;
 using Logrr.Storage.Sql;
 
 namespace Logrr.Notify;
@@ -8,6 +8,9 @@ namespace Logrr.Notify;
 /// <summary>CRUD + state transitions for the <c>rules</c> table (SPEC §10.3).</summary>
 public sealed class RuleStore(ControlDatabase db)
 {
+    /// <summary>Schema-qualified on SQL Server, bare on SQLite.</summary>
+    private string Table => db.T("rules");
+
     public void Create(Rule rule) => Write(rule, insert: true);
 
     public void Update(Rule rule) => Write(rule, insert: false);
@@ -17,8 +20,8 @@ public sealed class RuleStore(ControlDatabase db)
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = insert
-            ? """
-              INSERT INTO rules (id, name, app_id, filter, minimum_level, trigger_type,
+            ? $"""
+              INSERT INTO {Table} (id, name, app_id, filter, minimum_level, trigger_type,
                 threshold_count, threshold_window_minutes, dedupe_key_template, cooldown_minutes,
                 destination_id, body_template_override, max_fires_per_hour, is_dry_run, is_enabled,
                 auto_disabled_reason, last_fired_utc, created_utc)
@@ -26,8 +29,8 @@ public sealed class RuleStore(ControlDatabase db)
                 @tc, @tw, @dedupe, @cool, @dest, @override, @maxFires, @dry, @en,
                 @reason, @lastFired, @created);
               """
-            : """
-              UPDATE rules SET name=@name, app_id=@app, filter=@filter, minimum_level=@min,
+            : $"""
+              UPDATE {Table} SET name=@name, app_id=@app, filter=@filter, minimum_level=@min,
                 trigger_type=@trig, threshold_count=@tc, threshold_window_minutes=@tw,
                 dedupe_key_template=@dedupe, cooldown_minutes=@cool, destination_id=@dest,
                 body_template_override=@override, max_fires_per_hour=@maxFires, is_dry_run=@dry,
@@ -62,7 +65,7 @@ public sealed class RuleStore(ControlDatabase db)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT * FROM rules WHERE id = @id;";
+        cmd.CommandText = $"SELECT * FROM {Table} WHERE id = @id;";
         cmd.P("@id", id);
         using var r = cmd.ExecuteReader();
         return r.Read() ? Map(r) : null;
@@ -72,7 +75,7 @@ public sealed class RuleStore(ControlDatabase db)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT * FROM rules ORDER BY name;";
+        cmd.CommandText = $"SELECT * FROM {Table} ORDER BY name;";
         using var r = cmd.ExecuteReader();
         var list = new List<Rule>();
         while (r.Read()) list.Add(Map(r));
@@ -84,8 +87,8 @@ public sealed class RuleStore(ControlDatabase db)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT * FROM rules WHERE is_enabled = 1 AND (app_id IS NULL OR app_id = @app);";
         // is_enabled is BIT on SQL Server and INTEGER on SQLite; "= 1" is valid against both.
+        cmd.CommandText = $"SELECT * FROM {Table} WHERE is_enabled = 1 AND (app_id IS NULL OR app_id = @app);";
         cmd.P("@app", appId);
         using var r = cmd.ExecuteReader();
         var list = new List<Rule>();
@@ -95,19 +98,19 @@ public sealed class RuleStore(ControlDatabase db)
 
     public void SetLastFired(string id, DateTimeOffset now)
     {
-        Exec("UPDATE rules SET last_fired_utc = @now WHERE id = @id;", ("@now", now.Ms()), ("@id", id));
+        Exec($"UPDATE {Table} SET last_fired_utc = @now WHERE id = @id;", ("@now", now.Ms()), ("@id", id));
     }
 
     public void SetEnabled(string id, bool enabled)
     {
-        Exec("UPDATE rules SET is_enabled = @en, auto_disabled_reason = NULL WHERE id = @id;",
+        Exec($"UPDATE {Table} SET is_enabled = @en, auto_disabled_reason = NULL WHERE id = @id;",
             ("@en", enabled ? 1 : 0), ("@id", id));
     }
 
     /// <summary>Auto-disable a rule that blew its hourly fire cap (SPEC §10.7).</summary>
     public void AutoDisable(string id, string reason)
     {
-        Exec("UPDATE rules SET is_enabled = 0, auto_disabled_reason = @reason WHERE id = @id;",
+        Exec($"UPDATE {Table} SET is_enabled = 0, auto_disabled_reason = @reason WHERE id = @id;",
             ("@reason", reason), ("@id", id));
     }
 

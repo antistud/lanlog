@@ -169,7 +169,11 @@
                                             @if (e.Template is not null) { <dt>Template</dt><dd class="mono-sm">@e.Template</dd> }
                                             @if (e.Source is not null) { <dt>Source</dt><dd class="mono-sm">@e.Source</dd> }
                                             @if (e.Machine is not null) { <dt>Machine</dt><dd class="mono-sm">@e.Machine</dd> }
-                                            @if (e.TraceId is not null) { <dt>Trace</dt><dd class="mono-sm">@e.TraceId</dd> }
+                                            @if (e.TraceId is { } tid)
+                                            {
+                                                <dt>Trace</dt>
+                                                <dd class="mono-sm"><a href="@TraceUrl(tid, e.Id)" @onclick:stopPropagation="true">@tid</a></dd>
+                                            }
                                         </dl>
 
                                         @if (PropList(e) is { Count: > 0 } kvs)
@@ -199,6 +203,11 @@
 
                                         <div class="flex gap-2 mt-2">
                                             <a class="btn ghost sm" href="@($"/apps/{AppId}/events/{e.Id}")">Open detail →</a>
+                                            @if (e.TraceId is { } trace)
+                                            {
+                                                <a class="btn ghost sm" href="@TraceUrl(trace, e.Id)"
+                                                   title="Every event of this request, across apps">View trace →</a>
+                                            }
                                             @if (e.Properties is { ValueKind: JsonValueKind.Object })
                                             {
                                                 <button class="btn ghost sm" @onclick="() => CopyJson(e)">Copy JSON</button>
@@ -498,6 +507,9 @@
         JsonValueKind.Null => new Prop(name, "null", "", false),
         _ => new Prop(name, el.GetRawText(), "", false),
     };
+
+    private string TraceUrl(string traceId, string eventId) =>
+        $"/traces/{Uri.EscapeDataString(traceId)}?app={Uri.EscapeDataString(AppId)}&event={Uri.EscapeDataString(eventId)}";
 
     private static string Rel(DateTimeOffset ts)
     {

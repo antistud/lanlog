@@ -1,6 +1,6 @@
+using System.Data.Common;
 using System.Text.Json;
 using Logrr.Storage.Control;
-using System.Data.Common;
 using Logrr.Storage.Sql;
 
 namespace Logrr.Notify;
@@ -8,12 +8,15 @@ namespace Logrr.Notify;
 /// <summary>CRUD + circuit-breaker state for the <c>destinations</c> table (SPEC §10.1).</summary>
 public sealed class DestinationStore(ControlDatabase db)
 {
+    /// <summary>Schema-qualified on SQL Server, bare on SQLite.</summary>
+    private string Table => db.T("destinations");
+
     public void Create(Destination d)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = """
-            INSERT INTO destinations (id, name, kind, url, method, content_type, headers,
+        cmd.CommandText = $"""
+            INSERT INTO {Table} (id, name, kind, url, method, content_type, headers,
               auth_mode, auth_secret, auth_header_name, body_template,
               ticket_id_path, ticket_url_path, timeout_seconds, max_attempts,
               rate_limit_per_hour, is_enabled, consecutive_failures, circuit_open_until_utc, created_utc,
@@ -32,7 +35,7 @@ public sealed class DestinationStore(ControlDatabase db)
         cmd.P("@ct", d.ContentType);
         cmd.P("@headers", JsonSerializer.Serialize(d.Headers));
         cmd.P("@auth", (int)d.AuthMode);
-        cmd.P("@secret", (object?)d.AuthSecret);
+        cmd.AddBinary("@secret", d.AuthSecret);
         cmd.P("@authHeader", d.AuthHeaderName);
         cmd.P("@body", d.BodyTemplate);
         cmd.P("@idPath", d.TicketIdPath);
@@ -60,8 +63,8 @@ public sealed class DestinationStore(ControlDatabase db)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = """
-            UPDATE destinations SET
+        cmd.CommandText = $"""
+            UPDATE {Table} SET
               name=@name, kind=@kind, url=@url, method=@method, content_type=@ct, headers=@headers,
               auth_mode=@auth, auth_header_name=@authHeader, body_template=@body,
               ticket_id_path=@idPath, ticket_url_path=@urlPath, timeout_seconds=@timeout,
@@ -101,8 +104,8 @@ public sealed class DestinationStore(ControlDatabase db)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "UPDATE destinations SET auth_secret = @secret WHERE id = @id;";
-        cmd.P("@secret", (object?)secret);
+        cmd.CommandText = $"UPDATE {Table} SET auth_secret = @secret WHERE id = @id;";
+        cmd.AddBinary("@secret", secret);
         cmd.P("@id", id);
         cmd.ExecuteNonQuery();
     }
@@ -111,7 +114,7 @@ public sealed class DestinationStore(ControlDatabase db)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT * FROM destinations WHERE id = @id;";
+        cmd.CommandText = $"SELECT * FROM {Table} WHERE id = @id;";
         cmd.P("@id", id);
         using var r = cmd.ExecuteReader();
         return r.Read() ? Map(r) : null;
@@ -121,7 +124,7 @@ public sealed class DestinationStore(ControlDatabase db)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT * FROM destinations ORDER BY name;";
+        cmd.CommandText = $"SELECT * FROM {Table} ORDER BY name;";
         using var r = cmd.ExecuteReader();
         var list = new List<Destination>();
         while (r.Read()) list.Add(Map(r));
@@ -133,8 +136,8 @@ public sealed class DestinationStore(ControlDatabase db)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = """
-            UPDATE destinations
+        cmd.CommandText = $"""
+            UPDATE {Table}
             SET consecutive_failures = consecutive_failures + 1,
                 circuit_open_until_utc = CASE
                   WHEN consecutive_failures + 1 >= @threshold THEN @openUntil
@@ -152,7 +155,7 @@ public sealed class DestinationStore(ControlDatabase db)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "UPDATE destinations SET consecutive_failures = 0, circuit_open_until_utc = NULL WHERE id = @id;";
+        cmd.CommandText = $"UPDATE {Table} SET consecutive_failures = 0, circuit_open_until_utc = NULL WHERE id = @id;";
         cmd.P("@id", id);
         cmd.ExecuteNonQuery();
     }
@@ -161,7 +164,7 @@ public sealed class DestinationStore(ControlDatabase db)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "DELETE FROM destinations WHERE id = @id;";
+        cmd.CommandText = $"DELETE FROM {Table} WHERE id = @id;";
         cmd.P("@id", id);
         cmd.ExecuteNonQuery();
     }

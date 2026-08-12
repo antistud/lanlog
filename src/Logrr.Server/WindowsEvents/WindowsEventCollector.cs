@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.RegularExpressions;
 using Logrr.Server.Ingest;
 using Logrr.Storage.Control;
@@ -23,14 +24,59 @@ public sealed partial class WindowsEventCollector(
     Func<DateTimeOffset> clock,
     ILogger<WindowsEventCollector> logger)
 {
-    /// <summary>Consecutive failures per "machine|channel", so an unreachable box logs once, not hourly.</summary>
-    private readonly Dictionary<string, int> _failures = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>
+    /// Per-target health, keyed "machine|channel". Also what the admin status page reads, so it
+    /// is a <see cref="System.Collections.Concurrent.ConcurrentDictionary{TKey,TValue}"/>: the
+    /// UI reads it on a render thread while a poll writes it on a pooled one.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, TargetHealth> _health = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>App ids already rejected as malformed; logged once each rather than every poll.</summary>
     private readonly HashSet<string> _badAppIds = new(StringComparer.Ordinal);
 
+    /// <summary>
+    /// Serialises polls. The timer and the admin page's "Collect now" both call
+    /// <see cref="CollectOnce"/>, and two passes at once would read the same cursor twice and
+    /// ship every event in between as a duplicate.
+    /// </summary>
+    private readonly SemaphoreSlim _gate = new(1, 1);
+
+    private sealed class TargetHealth
+    {
+        public DateTimeOffset? LastSuccessUtc;
+        public DateTimeOffset? LastAttemptUtc;
+        public int ConsecutiveFailures;
+        public string? LastError;
+        public long EventsCollected;
+    }
+
+    /// <summary>When the last full pass finished, for the status page.</summary>
+    public DateTimeOffset? LastPollUtc { get; private set; }
+
+    /// <summary>True while a pass is running, so the UI can disable its button.</summary>
+    public bool IsCollecting => _gate.CurrentCount == 0;
+
     /// <summary>One pass over every configured source. Never throws — a bad target is logged and skipped.</summary>
     public void CollectOnce(CancellationToken ct)
+    {
+        // A poll already in flight has just done this work; skipping beats queueing a
+        // redundant pass behind it.
+        if (!_gate.Wait(TimeSpan.Zero, ct))
+        {
+            return;
+        }
+        try
+        {
+            CollectAllTargets(ct);
+            LastPollUtc = clock();
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    private void CollectAllTargets(CancellationToken ct)
     {
         foreach (var src in options.Sources)
         {
@@ -45,19 +91,23 @@ public sealed partial class WindowsEventCollector(
                 continue;
             }
 
-            foreach (var channel in src.Channels)
+            foreach (var channel in src.EffectiveChannels)
             {
                 if (ct.IsCancellationRequested)
                 {
                     return;
                 }
 
-                var key = $"{src.Machine}|{channel}";
+                var health = _health.GetOrAdd(TargetKey(src.Machine, channel), _ => new TargetHealth());
+                health.LastAttemptUtc = clock();
                 try
                 {
-                    CollectChannel(src, channel, app);
-                    if (_failures.Remove(key))
+                    CollectChannel(src, channel, app, health);
+                    health.LastSuccessUtc = clock();
+                    health.LastError = null;
+                    if (health.ConsecutiveFailures > 0)
                     {
+                        health.ConsecutiveFailures = 0;
                         logger.LogInformation("Windows event collection recovered for {Machine}/{Channel}",
                             src.Machine, channel);
                     }
@@ -66,9 +116,9 @@ public sealed partial class WindowsEventCollector(
                 {
                     // First failure is news; the hundredth is noise from a box that is simply
                     // switched off. Drop to Debug until it recovers.
-                    var count = _failures.TryGetValue(key, out var n) ? n + 1 : 1;
-                    _failures[key] = count;
-                    if (count == 1)
+                    health.ConsecutiveFailures++;
+                    health.LastError = ex.Message;
+                    if (health.ConsecutiveFailures == 1)
                     {
                         logger.LogWarning(ex, "Windows event collection failed for {Machine}/{Channel}",
                             src.Machine, channel);
@@ -76,16 +126,57 @@ public sealed partial class WindowsEventCollector(
                     else
                     {
                         logger.LogDebug(ex, "Windows event collection still failing for {Machine}/{Channel} ({Count} polls)",
-                            src.Machine, channel, count);
+                            src.Machine, channel, health.ConsecutiveFailures);
                     }
                 }
             }
         }
     }
 
-    private void CollectChannel(WindowsEventSourceOptions src, string channel, AppRecord app)
+    /// <summary>
+    /// Live status for every configured target, joined onto its stored cursor. Built from the
+    /// configuration rather than from what has been collected, so a machine that has never once
+    /// been reachable still appears — as a failing row, which is the case you need to see.
+    /// </summary>
+    public IReadOnlyList<WindowsEventTargetStatus> Status()
     {
-        var cursor = cursors.Get(src.Machine, channel) ?? Seed(src, channel, app);
+        var byKey = cursors.List().ToDictionary(
+            c => TargetKey(c.Machine, c.Channel), StringComparer.OrdinalIgnoreCase);
+
+        var rows = new List<WindowsEventTargetStatus>();
+        foreach (var src in options.Sources)
+        {
+            foreach (var channel in src.EffectiveChannels)
+            {
+                var key = TargetKey(src.Machine, channel);
+                byKey.TryGetValue(key, out var cursor);
+                _health.TryGetValue(key, out var health);
+
+                rows.Add(new WindowsEventTargetStatus
+                {
+                    Machine = WindowsEventMapper.NormalizeMachine(src.Machine),
+                    ConfiguredMachine = src.Machine,
+                    Channel = channel,
+                    AppId = src.AppId,
+                    LastRecordId = cursor?.LastRecordId,
+                    CursorUpdatedUtc = cursor?.UpdatedUtc,
+                    LastSuccessUtc = health?.LastSuccessUtc,
+                    LastAttemptUtc = health?.LastAttemptUtc,
+                    ConsecutiveFailures = health?.ConsecutiveFailures ?? 0,
+                    LastError = health?.LastError,
+                    EventsCollected = health?.EventsCollected ?? 0,
+                });
+            }
+        }
+        return rows;
+    }
+
+    private static string TargetKey(string machine, string channel) =>
+        $"{machine.Trim()}|{channel.Trim()}";
+
+    private void CollectChannel(WindowsEventSourceOptions src, string channel, AppRecord app, TargetHealth health)
+    {
+        var cursor = cursors.Get(src.Machine, channel) ?? Seed(src, channel, app, health);
         var maxLevel = WindowsEventMapper.MaxWindowsLevelFor(app.MinimumLevel);
 
         for (var batch = 0; batch < Math.Max(1, options.MaxBatchesPerPoll); batch++)
@@ -105,7 +196,7 @@ public sealed partial class WindowsEventCollector(
                 return;
             }
 
-            Ship(records, src, channel, app);
+            Ship(records, src, channel, app, health);
 
             // Record ids are ascending, but Max() rather than Last() so a source that reorders
             // can never walk the cursor backwards and re-ship what it already sent.
@@ -124,10 +215,11 @@ public sealed partial class WindowsEventCollector(
     }
 
     private void Ship(IReadOnlyList<WindowsEventRecord> records, WindowsEventSourceOptions src,
-        string channel, AppRecord app)
+        string channel, AppRecord app, TargetHealth health)
     {
         var events = records.Select(r => WindowsEventMapper.ToLogEvent(r, src.Machine)).ToList();
         var result = ingest.IngestEvents(events, app);
+        health.EventsCollected += result.Accepted;
 
         if (result.Rejected > 0)
         {
@@ -148,7 +240,7 @@ public sealed partial class WindowsEventCollector(
     /// history, and silently importing all of it on first start would bury the app and mostly be
     /// discarded by the 30-day skew bound anyway (SPEC §6.3).
     /// </summary>
-    private long Seed(WindowsEventSourceOptions src, string channel, AppRecord app)
+    private long Seed(WindowsEventSourceOptions src, string channel, AppRecord app, TargetHealth health)
     {
         var hours = Math.Clamp(options.InitialBackfillHours, 0, WindowsEventOptions.MaxInitialBackfillHours);
         if (hours == 0)
@@ -176,7 +268,7 @@ public sealed partial class WindowsEventCollector(
 
         if (records.Count > 0)
         {
-            Ship(records, src, channel, app);
+            Ship(records, src, channel, app, health);
         }
 
         cursors.Set(src.Machine, channel, cursor, clock());

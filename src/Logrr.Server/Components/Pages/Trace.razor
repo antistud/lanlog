@@ -1,0 +1,193 @@
+@page "/traces/{TraceId}"
+@attribute [Authorize]
+@rendermode InteractiveServer
+@using System.Globalization
+@using Logrr.Server.Exploring
+@inject Logrr.Storage.TraceReader Traces
+@inject Logrr.Storage.EventReader Reader
+@inject Logrr.Storage.Control.AppStore Apps
+@inject IJSRuntime JS
+
+<PageTitle>Trace @Short(TraceId) — Logrr</PageTitle>
+
+<div class="page-head">
+    <div>
+        <div class="meta">
+            <a href="/">Apps</a> <span class="muted-2">/</span>
+            @if (AppId is { Length: > 0 } app)
+            {
+                <a href="@($"/apps/{app}/search")">@app</a> <span class="muted-2">/</span>
+            }
+            <span class="mono-sm">trace</span>
+        </div>
+        <h1>Trace</h1>
+        <div class="meta mono-sm" style="margin-top:var(--sp-1)">@TraceId</div>
+    </div>
+    <div class="flex gap-2">
+        <button class="btn ghost" @onclick="CopyId">Copy trace id</button>
+        @if (EventId is { Length: > 0 } ev && AppId is { Length: > 0 } evApp)
+        {
+            <a class="btn" href="@($"/apps/{evApp}/events/{ev}")">← Back to event</a>
+        }
+    </div>
+</div>
+
+@if (_timeline.Rows.Count == 0)
+{
+    <div class="card">
+        <EmptyState Glyph="⋯" Title="No events for this trace">
+            Nothing was found carrying this trace id. It may have aged out of retention, or the
+            events may sit outside the window that was searched.
+        </EmptyState>
+    </div>
+}
+else
+{
+    <div class="grid cols-4 mb-4">
+        <div class="tile"><span class="k">Duration</span><span class="v sm">@Format(_timeline.Duration)</span>
+            <span class="foot">@_timeline.Start.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff")</span></div>
+        <div class="tile"><span class="k">Events</span><span class="v sm">@_timeline.Rows.Count.ToString("N0")</span>
+            <span class="foot">@(_timeline.SpanCount > 0 ? $"{_timeline.SpanCount:N0} span(s)" : "no span timings")</span></div>
+        <div class="tile"><span class="k">Apps</span><span class="v sm">@_timeline.AppCount</span>
+            <span class="foot">@string.Join(", ", _timeline.Rows.Select(r => r.AppId).Distinct())</span></div>
+        <div class="tile @(_timeline.ErrorCount > 0 ? "alert" : "")"><span class="k">Errors</span>
+            <span class="v sm">@_timeline.ErrorCount</span>
+            <span class="foot">at or above Error</span></div>
+    </div>
+
+    @if (_trace.Truncated)
+    {
+        <div class="card mb-4" style="padding:var(--sp-3) var(--sp-4)">
+            <span class="pill">⚡ Showing the first @_timeline.Rows.Count events of this trace — later ones are not drawn.</span>
+        </div>
+    }
+
+    <div class="card" style="padding:0">
+        <div class="table-wrap" style="border:none">
+            <table class="data trace-table">
+                <thead>
+                    <tr>
+                        <th style="width:88px">Offset</th>
+                        <th style="width:112px">Level</th>
+                        <th style="width:132px">App</th>
+                        <th style="width:38%">Message</th>
+                        <th>Timeline</th>
+                        <th style="width:88px" class="text-right">Duration</th>
+                        <th style="width:52px"></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var r in _timeline.Rows)
+                    {
+                        <tr class="sev-row sev-@r.Event.Level @(IsFocused(r) ? "sel" : "")">
+                            <td class="mono-sm nowrap num">+@Format(r.Offset)</td>
+                            <td><LevelChip Level="r.Event.Level" /></td>
+                            <td class="truncate"><span class="badge">@r.AppId</span></td>
+                            <td class="truncate" title="@r.Event.Message">
+                                <span class="trace-indent" style="width:@(r.Depth * 14)px"></span>
+                                @if (r.IsSpan)
+                                {
+                                    <span class="trace-glyph" title="span">◷</span>
+                                }
+                                @r.Event.Message
+                                @if (r.Event.Source is { } src)
+                                {
+                                    <span class="mono-sm" style="margin-left:6px">@Short(src)</span>
+                                }
+                            </td>
+                            <td>
+                                <div class="trace-track" title="@Format(r.Offset) into the trace">
+                                    @if (r.IsSpan)
+                                    {
+                                        <div class="trace-bar tb-@r.Event.Level"
+                                             style="left:@Pct(r.LeftPercent)%; width:max(2px, @Pct(r.WidthPercent)%)"></div>
+                                    }
+                                    else
+                                    {
+                                        <div class="trace-point tb-@r.Event.Level" style="left:@Pct(r.LeftPercent)%"></div>
+                                    }
+                                </div>
+                            </td>
+                            <td class="mono-sm text-right nowrap num">@(r.Duration is { } d ? Format(d) : "")</td>
+                            <td class="text-right">
+                                @if (IsFocused(r))
+                                {
+                                    <span class="badge accent">this</span>
+                                }
+                                else
+                                {
+                                    <a href="@($"/apps/{r.AppId}/events/{r.Event.Id}")" title="Open event detail">→</a>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="meta mt-4">
+        @_trace.PartitionsScanned partition(s) scanned@(AppId is { Length: > 0 } one ? $" in {one}" : " across all apps").
+        @if (EventId is null)
+        {
+            <span>A trace id on its own is looked for in each app's newest partitions; open a trace from an event and it is searched around that event's date instead.</span>
+        }
+    </div>
+}
+
+@code {
+    [Parameter] public string TraceId { get; set; } = "";
+
+    /// <summary>The app the trace was opened from — breadcrumb, back link, and scan anchor.</summary>
+    [SupplyParameterFromQuery(Name = "app")] public string? AppId { get; set; }
+
+    /// <summary>The event the trace was opened from, highlighted in the waterfall.</summary>
+    [SupplyParameterFromQuery(Name = "event")] public string? EventId { get; set; }
+
+    /// <summary>Restrict the trace to the one app, rather than every app the user can read.</summary>
+    [SupplyParameterFromQuery(Name = "only")] public bool Only { get; set; }
+
+    private TraceResponse _trace = new() { TraceId = "", Events = [] };
+    private TraceTimeline _timeline = TraceTimeline.Empty;
+
+    protected override void OnParametersSet()
+    {
+        // The event we came from dates the trace, which keeps the scan to the partitions
+        // around it instead of the last few days of every app.
+        DateTimeOffset? near = null;
+        if (AppId is { Length: > 0 } app && EventId is { Length: > 0 } id)
+        {
+            near = Reader.GetById(app, id)?.Timestamp;
+        }
+
+        IReadOnlyList<string> apps = Only && AppId is { Length: > 0 } only
+            ? [only]
+            : Apps.List().Select(a => a.Id).ToList();
+
+        _trace = Traces.Read(TraceId, apps, near);
+        _timeline = TraceTimeline.Build(_trace);
+    }
+
+    private bool IsFocused(TraceRow r) =>
+        r.Event.Id == EventId && r.AppId == AppId;
+
+    private async Task CopyId() => await JS.InvokeVoidAsync("logrrCopy", TraceId);
+
+    /// <summary>CSS needs a dot, whatever the server's culture is.</summary>
+    private static string Pct(double value) =>
+        value.ToString("0.###", CultureInfo.InvariantCulture);
+
+    private static string Format(TimeSpan d)
+    {
+        var ms = d.TotalMilliseconds;
+        if (ms < 1) { return $"{ms.ToString("0.##", CultureInfo.InvariantCulture)}ms"; }
+        if (ms < 1000) { return $"{ms.ToString("0.#", CultureInfo.InvariantCulture)}ms"; }
+        if (d.TotalSeconds < 60) { return $"{d.TotalSeconds.ToString("0.##", CultureInfo.InvariantCulture)}s"; }
+        if (d.TotalMinutes < 60) { return $"{(int)d.TotalMinutes}m {d.Seconds}s"; }
+        return $"{(int)d.TotalHours}h {d.Minutes}m";
+    }
+
+    /// <summary>Long ids and namespaces are for hovering over, not for reading in a cell.</summary>
+    private static string Short(string value) =>
+        value.Length <= 24 ? value : "…" + value[^23..];
+}

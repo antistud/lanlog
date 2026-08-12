@@ -235,6 +235,56 @@ Hourly maintenance loop:
 The global disk guard is non-negotiable — a log server that fills the system drive of a
 production IIS box is worse than no log server.
 
+### 4.7 Optional SQL Server backend
+
+Everything above describes the default. Setting `Logrr:Storage:ConnectionString` (or
+`LOGRR_SQL_CONNECTION`) moves both the control tables and the event partitions into SQL
+Server instead. Leaving it empty — the default — keeps the zero-dependency SQLite layout,
+which is the point of the product; the SQL Server option exists for shops that already back
+up, monitor and HA a database server and want Logrr's data inside that perimeter.
+
+**The partition model carries over unchanged.** An app-day is a *table* rather than a file:
+`[logrr].[events_{app}_{yyyyMMdd}]`, with the app id's hyphens mapped to underscores (a slug
+can never contain an underscore, so two apps cannot collide). Consequences:
+
+- Retention still drops a partition whole — `DROP TABLE`, a metadata operation, not a mass
+  delete that bloats the transaction log.
+- A query still narrows to one day of one app before it filters.
+- `PartitionDays` is a catalog query instead of a directory listing; partition size comes
+  from `sys.allocation_units` instead of a file length.
+
+Row ids are assigned by the writer, not by an identity column, so the composite event id
+(`{yyyyMMdd}:{rowid}`) and cursor paging behave identically on both backends.
+
+**Deliberate differences**, none of which change a query's results:
+
+| | SQLite | SQL Server |
+|---|---|---|
+| Text search | FTS5 `MATCH`, with stemming | `LIKE` scan inside the day's partition; every whitespace-separated term must appear, no stemming |
+| Indexed properties | expression index on `json_extract` | persisted computed column `CAST(JSON_VALUE(…) AS NVARCHAR(400))` plus an index on it |
+| Batch insert | prepared per-row insert in one transaction | multi-row `INSERT … VALUES` chunked under the 2100-parameter cap, one transaction |
+| Upserts | `ON CONFLICT DO UPDATE` | `UPDATE … WITH (UPDLOCK, SERIALIZABLE)` then conditional `INSERT` |
+| Free-space guard | applies | not applicable — the storage is the server's to manage; the per-app age and size caps still apply |
+
+Full-text search is the one real capability loss. SQL Server full-text would need a catalog
+per partition table and populates asynchronously, so a just-written event would not be
+findable — the wrong trade for a log tail.
+
+**The filter compiler emits a different SQL flavour per backend** (§7.1). This is not
+cosmetic: SQL Server agrees with the in-memory predicate on none of the defaults that
+matter, so the emitter asks for each explicitly — numbers cast out of `JSON_VALUE`'s
+nvarchar with `TRY_CAST`, comparisons forced to `Latin1_General_BIN2` to match
+`string.CompareOrdinal`, `LIKE` forced to a case-insensitive collation, and `[` escaped
+because SQL Server reads it as a character class and SQLite does not. The backend-agreement
+test runs the same corpus against both.
+
+**The data path is still required** with SQL Server: the Data Protection key ring and the
+internal log live there. §11's warning about losing `keys\` is unchanged.
+
+**`InvariantGlobalization` must stay `false`.** `Microsoft.Data.SqlClient` throws
+"Globalization Invariant Mode is not supported" from `SqlConnection.Open()`, so an invariant
+build would ship a working SQLite backend and a SQL Server backend that dies on first use.
+
 ---
 
 ## 5. Domain model
@@ -301,8 +351,14 @@ Newline-delimited CLEF, one JSON object per line:
 
 Reserved fields: `@t` timestamp, `@m` rendered message, `@mt` template, `@l` level
 (absent = Information), `@x` exception, `@i` event id, `@r` renderings, `@tr` trace id,
-`@sp` span id. `@@x` unescapes to a literal `@x` property. Everything else is a property.
-If `@m` is absent, render `@mt` server-side.
+`@sp` span id, `@ps` parent span id, `@st` span start. `@@x` unescapes to a literal `@x`
+property. Everything else is a property. If `@m` is absent, render `@mt` server-side.
+
+`@tr` and `@sp` are columns; `@ps` and `@st` are not, because the partition DDL is fixed and
+never migrated (§4.3) — they land in the property bag as `_parentSpanId` and `_spanStart`
+alongside the other server-side markers. That is enough for the trace view (§9) to nest spans
+and measure them: an event carrying `@st` *is* a completed span, and its duration is
+`@t - @st`. An app that propagates only a trace id still gets a trace, just a flat one.
 
 **Why this shape:** it is the wire format `Serilog.Sinks.Seq` already emits. Existing
 apps point at Logrr by changing a URL and a key — no client package to build, version,
@@ -430,6 +486,8 @@ rowids are monotonic and partitions are date-bounded. No `OFFSET` anywhere.
 GET  /api/v1/apps                      list
 GET  /api/v1/apps/{id}/stats           counts by level, by hour, storage size
 GET  /api/v1/apps/{id}/events/{id}     single event, full detail
+GET  /api/v1/traces/{traceId}          whole trace, oldest first, across apps
+      ?appId=…&near=…&limit=500
 GET  /api/v1/apps/{id}/stream          SSE tail (token auth, for CLI consumers)
 GET  /health                           liveness, queue depth, disk free
 GET  /api/v1/buildinfo                 version, commit, build date
@@ -592,6 +650,10 @@ at most 4 times a second regardless of ingest rate.
 4. **Search** — same grid, historical, cursor paging, shareable URL encoding the filter.
 5. **Event detail** — full event, related events by `trace_id`, occurrence count for the
    event type, any linked tickets.
+5b. **Trace** — `/traces/{traceId}`, reached by clicking a trace id anywhere it appears. One
+   request end to end: every event carrying that trace id, **across apps**, as a waterfall —
+   nested by span, positioned and sized by time, one row per event, each linking back to its
+   detail. Scanning is bounded to the partitions around the event it was opened from.
 6. **App settings** — retention, size cap, minimum level, indexed properties.
 7. **Tokens** — create/name/scope/expiry/revoke; secret shown once in a modal with copy
    and an explicit "I've saved this" confirmation.
@@ -869,7 +931,10 @@ misconfigured IdP can't lock you out of your own log server.
 ```json
 {
   "Logrr": {
-    "Storage": { "DataPath": "C:\\Logrr", "MinFreeDiskMb": 5120 },
+    "Storage": {
+      "DataPath": "C:\\Logrr", "MinFreeDiskMb": 5120,
+      "ConnectionString": "", "Schema": "logrr"
+    },
     "Ingest": {
       "ChannelCapacity": 20000, "BatchSize": 500, "FlushIntervalMs": 500,
       "MaxRequestBytes": 10485760, "MaxEventBytes": 262144
@@ -901,6 +966,12 @@ misconfigured IdP can't lock you out of your own log server.
 Runtime-changeable settings (per-app retention, rules, destinations) live in `control.db`
 and are edited in the UI. Only infrastructure settings live in the file. Don't split the
 same concern across both.
+
+`Storage:ConnectionString` selects the SQL Server backend (§4.7); empty keeps SQLite. It
+also reads from `LOGRR_SQL_CONNECTION` or `ConnectionStrings:Logrr`, so a deployment can
+repoint the database without editing the published `appsettings.json` and a shop that keeps
+every connection string in one place does not have to make an exception for this one.
+`Schema` applies to the SQL Server backend only.
 
 `WindowsEvents` obeys that line rather than crossing it: which machines to reach and with
 what credentials is deployment topology, like the Windows sign-in switch above it. The
@@ -970,8 +1041,13 @@ OIDC for the UI, event-type grouping ("this occurred 1,204 times"), OTLP logs in
 CSV/JSON export, per-level retention (errors 90 days, debug 3), saved searches, ticket
 status sync back from the destination.
 
-**Deferred indefinitely:** metrics, traces UI, clustering, multi-node, PostgreSQL
-backend, mobile app, email/SMS channels.
+**Deferred indefinitely:** metrics, clustering, multi-node, PostgreSQL backend, mobile app,
+email/SMS channels.
+
+The trace view (§9) is the one thing lifted out of this list, and only the log-shaped half of
+it: `trace_id` was already on every event and already indexed, so correlating a request's log
+lines cost a reader and a screen. That is not APM — there is no sampling, no service map, no
+metrics off the back of it, and a span is only ever an event an app chose to log.
 
 ---
 

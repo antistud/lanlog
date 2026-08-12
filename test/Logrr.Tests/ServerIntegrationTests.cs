@@ -108,6 +108,47 @@ public class ServerIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task Trace_endpoint_returns_the_whole_trace_for_the_tokens_app()
+    {
+        var client = Client();
+        var t0 = DateTimeOffset.UtcNow.AddSeconds(-1);
+
+        var clef = string.Join('\n',
+            $$"""{"@t":"{{t0.ToString("O")}}","@mt":"GET /orders","@tr":"trace-a","@sp":"span-1","@st":"{{t0.AddMilliseconds(-200).ToString("O")}}"}""",
+            $$"""{"@t":"{{t0.AddMilliseconds(-100).ToString("O")}}","@mt":"loading orders","@tr":"trace-a","@sp":"span-1"}""",
+            $$"""{"@t":"{{t0.ToString("O")}}","@mt":"something else","@tr":"trace-b"}""");
+
+        var post = await client.PostAsync("/api/events/raw",
+            new StringContent(clef, Encoding.UTF8, "application/vnd.serilog.clef"));
+        Assert.Equal(HttpStatusCode.Created, post.StatusCode);
+
+        TraceResponse? trace = null;
+        for (var i = 0; i < 30 && (trace is null || trace.Events.Count < 2); i++)
+        {
+            await Task.Delay(200);
+            trace = await client.GetFromJsonAsync<TraceResponse>(
+                $"/api/v1/traces/trace-a?near={Uri.EscapeDataString(t0.ToString("O"))}");
+        }
+
+        Assert.NotNull(trace);
+        // Oldest first, and only this trace.
+        Assert.Equal(["loading orders", "GET /orders"], trace!.Events.Select(e => e.Event.Message));
+        Assert.All(trace.Events, e => Assert.Equal("billing", e.AppId));
+
+        var span = trace.Events.Single(e => e.Event.Message == "GET /orders").Event;
+        Assert.Equal("span-1", span.SpanId);
+        Assert.True(span.Properties!.Value.TryGetProperty(Logrr.Core.SpanFields.SpanStart, out _));
+    }
+
+    [Fact]
+    public async Task Trace_endpoint_refuses_an_app_the_token_cannot_read()
+    {
+        var client = Client();
+        var resp = await client.GetAsync("/api/v1/traces/trace-a?appId=someone-else");
+        Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
+    }
+
+    [Fact]
     public async Task Ingest_without_token_is_unauthorized()
     {
         var client = _factory.CreateClient(); // no key

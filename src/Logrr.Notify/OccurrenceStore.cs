@@ -1,5 +1,5 @@
-using Logrr.Storage.Control;
 using System.Data.Common;
+using Logrr.Storage.Control;
 using Logrr.Storage.Sql;
 
 namespace Logrr.Notify;
@@ -7,11 +7,14 @@ namespace Logrr.Notify;
 /// <summary>Accumulates per-rule/per-key occurrences for dedupe/threshold/cooldown (SPEC §10.4).</summary>
 public sealed class OccurrenceStore(ControlDatabase db)
 {
+    /// <summary>Schema-qualified on SQL Server, bare on SQLite.</summary>
+    private string Table => db.T("rule_occurrences");
+
     public Occurrence? Get(string ruleId, string dedupeKey)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT * FROM rule_occurrences WHERE rule_id = @r AND dedupe_key = @k;";
+        cmd.CommandText = $"SELECT * FROM {Table} WHERE rule_id = @r AND dedupe_key = @k;";
         cmd.P("@r", ruleId);
         cmd.P("@k", dedupeKey);
         using var reader = cmd.ExecuteReader();
@@ -26,20 +29,20 @@ public sealed class OccurrenceStore(ControlDatabase db)
             // Lock-then-insert rather than MERGE: the rule engine upserts the same
             // (rule, dedupe key) from several dispatcher threads, and taking the key-range lock
             // on the probe is what stops two of them racing into a primary-key violation.
-            ? """
+            ? $"""
               BEGIN TRANSACTION;
-              UPDATE rule_occurrences WITH (UPDLOCK, SERIALIZABLE)
+              UPDATE {Table} WITH (UPDLOCK, SERIALIZABLE)
                 SET window_start_utc=@ws, [count]=@count, last_seen_utc=@last,
                     sample_event=@sample, last_fired_utc=@fired, ticket_url=@ticket
                 WHERE rule_id=@r AND dedupe_key=@k;
               IF @@ROWCOUNT = 0
-                INSERT INTO rule_occurrences (rule_id, dedupe_key, window_start_utc, [count],
+                INSERT INTO {Table} (rule_id, dedupe_key, window_start_utc, [count],
                   first_seen_utc, last_seen_utc, sample_event, last_fired_utc, ticket_url)
                 VALUES (@r, @k, @ws, @count, @first, @last, @sample, @fired, @ticket);
               COMMIT;
               """
-            : """
-              INSERT INTO rule_occurrences (rule_id, dedupe_key, window_start_utc, [count],
+            : $"""
+              INSERT INTO {Table} (rule_id, dedupe_key, window_start_utc, [count],
                 first_seen_utc, last_seen_utc, sample_event, last_fired_utc, ticket_url)
               VALUES (@r, @k, @ws, @count, @first, @last, @sample, @fired, @ticket)
               ON CONFLICT(rule_id, dedupe_key) DO UPDATE SET
@@ -63,7 +66,7 @@ public sealed class OccurrenceStore(ControlDatabase db)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "DELETE FROM rule_occurrences WHERE rule_id = @r;";
+        cmd.CommandText = $"DELETE FROM {Table} WHERE rule_id = @r;";
         cmd.P("@r", ruleId);
         return cmd.ExecuteNonQuery();
     }
@@ -73,7 +76,7 @@ public sealed class OccurrenceStore(ControlDatabase db)
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "DELETE FROM rule_occurrences WHERE last_seen_utc < @cutoff;";
+        cmd.CommandText = $"DELETE FROM {Table} WHERE last_seen_utc < @cutoff;";
         cmd.P("@cutoff", cutoff.Ms());
         return cmd.ExecuteNonQuery();
     }

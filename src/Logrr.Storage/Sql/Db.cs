@@ -1,3 +1,4 @@
+using System.Data;
 using System.Data.Common;
 
 namespace Logrr.Storage.Sql;
@@ -18,6 +19,26 @@ public static class Db
         var p = cmd.CreateParameter();
         p.ParameterName = name;
         p.Value = value ?? DBNull.Value;
+        cmd.Parameters.Add(p);
+        return p;
+    }
+
+    /// <summary>
+    /// Add a binary parameter, typed even when the value is null.
+    /// </summary>
+    /// <remarks>
+    /// A plain <see cref="DBNull"/> carries no type, and SqlClient then infers <c>nvarchar</c>
+    /// for it — which SQL Server refuses to assign to a <c>varbinary</c> column ("implicit
+    /// conversion … is not allowed"). SQLite does not care, so an untyped null only fails on one
+    /// backend, and only when the column happens to be null: exactly the sort of bug that hides
+    /// until an operator saves a destination with no secret.
+    /// </remarks>
+    public static DbParameter AddBinary(this DbCommand cmd, string name, byte[]? value)
+    {
+        var p = cmd.CreateParameter();
+        p.ParameterName = name;
+        p.DbType = DbType.Binary;
+        p.Value = (object?)value ?? DBNull.Value;
         cmd.Parameters.Add(p);
         return p;
     }

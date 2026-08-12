@@ -18,6 +18,13 @@ public sealed class ControlDatabase
 
     public SqlDialect Dialect { get; }
 
+    /// <summary>
+    /// A control table named for the active backend — bare on SQLite, schema-qualified on SQL
+    /// Server. Every store writes its table names through this, because an unqualified name on
+    /// SQL Server resolves against the login's default schema and would miss Logrr's entirely.
+    /// </summary>
+    public string T(string table) => Dialect.ControlTable(table);
+
     /// <summary>True before the first run — used to trigger bootstrap (SPEC §2).</summary>
     public bool Exists() => Dialect.ControlExists();
 
