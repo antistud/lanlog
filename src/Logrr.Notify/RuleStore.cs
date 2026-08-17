@@ -24,17 +24,17 @@ public sealed class RuleStore(ControlDatabase db)
               INSERT INTO {Table} (id, name, app_id, filter, minimum_level, trigger_type,
                 threshold_count, threshold_window_minutes, dedupe_key_template, cooldown_minutes,
                 destination_id, body_template_override, max_fires_per_hour, is_dry_run, is_enabled,
-                auto_disabled_reason, last_fired_utc, created_utc)
+                auto_disabled_reason, scope_changed_utc, last_fired_utc, created_utc)
               VALUES (@id, @name, @app, @filter, @min, @trig,
                 @tc, @tw, @dedupe, @cool, @dest, @override, @maxFires, @dry, @en,
-                @reason, @lastFired, @created);
+                @reason, @scopeChanged, @lastFired, @created);
               """
             : $"""
               UPDATE {Table} SET name=@name, app_id=@app, filter=@filter, minimum_level=@min,
                 trigger_type=@trig, threshold_count=@tc, threshold_window_minutes=@tw,
                 dedupe_key_template=@dedupe, cooldown_minutes=@cool, destination_id=@dest,
                 body_template_override=@override, max_fires_per_hour=@maxFires, is_dry_run=@dry,
-                is_enabled=@en, auto_disabled_reason=@reason
+                is_enabled=@en, auto_disabled_reason=@reason, scope_changed_utc=@scopeChanged
               WHERE id=@id;
               """;
         cmd.P("@id", x.Id);
@@ -53,6 +53,7 @@ public sealed class RuleStore(ControlDatabase db)
         cmd.P("@dry", x.IsDryRun ? 1 : 0);
         cmd.P("@en", x.IsEnabled ? 1 : 0);
         cmd.P("@reason", x.AutoDisabledReason);
+        cmd.P("@scopeChanged", x.ScopeChangedUtc.Ms());
         if (insert)
         {
             cmd.P("@lastFired", x.LastFiredUtc.Ms());
@@ -141,6 +142,7 @@ public sealed class RuleStore(ControlDatabase db)
         IsDryRun = r.Bool("is_dry_run"),
         IsEnabled = r.Bool("is_enabled"),
         AutoDisabledReason = r.Str("auto_disabled_reason"),
+        ScopeChangedUtc = r.ReadTsNull("scope_changed_utc"),
         LastFiredUtc = r.ReadTsNull("last_fired_utc"),
         CreatedUtc = r.ReadTs("created_utc"),
     };

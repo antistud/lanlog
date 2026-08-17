@@ -68,6 +68,8 @@ else
         <div class="field">
             <label>Filter expression <span class="muted-2">(optional)</span></label>
             <input class="input mono" @bind="_filter" placeholder="Exception is not null and Source like 'Payments%'" />
+            @if (_filterError is not null) { <div class="field-error">@_filterError</div> }
+            else { <div class="hint">Compare a field to a value — a bare message is not an expression. Wildcards: <code>Message like 'Application % has shutdown.'</code></div> }
         </div>
         <div class="grid cols-2">
             <div class="field">
@@ -126,6 +128,7 @@ else
     private LogLevel _minLevel = LogLevel.Error;
     private int _cooldown = 60, _maxFires = 20, _thresholdCount = 5, _thresholdWindow = 10;
     private bool _dryRun = true;
+    private string? _filterError;
 
     protected override void OnInitialized() => Load();
 
@@ -142,6 +145,7 @@ else
     private void OpenCreate()
     {
         _editId = null;
+        _filterError = null;
         _name = ""; _appId = ""; _filter = ""; _dedupe = "{{event.eventType}}"; _trigger = "EveryMatch";
         _minLevel = LogLevel.Error; _cooldown = 60; _maxFires = 20; _thresholdCount = 5; _thresholdWindow = 10; _dryRun = true;
         _destId = _destinations.Count > 0 ? _destinations[0].Id : "";
@@ -151,6 +155,7 @@ else
     private void OpenEdit(Logrr.Notify.Rule r)
     {
         _editId = r.Id;
+        _filterError = null;
         _editEnabled = r.IsEnabled;
         _editCreated = r.CreatedUtc;
         _name = r.Name; _appId = r.AppId ?? ""; _filter = r.Filter ?? "";
@@ -164,6 +169,16 @@ else
 
     private void Save()
     {
+        // A filter that does not parse can never match, so keep the dialog open and say why
+        // rather than storing a rule that silently does nothing.
+        _filterError = null;
+        if (!string.IsNullOrWhiteSpace(_filter)
+            && !Logrr.Core.Filters.FilterExpression.TryParse(_filter, out _, out var error))
+        {
+            _filterError = error;
+            return;
+        }
+
         var rule = new Logrr.Notify.Rule
         {
             Id = _editId ?? Guid.NewGuid().ToString("N"),
@@ -180,6 +195,9 @@ else
             MaxFiresPerHour = _maxFires,
             IsDryRun = _dryRun,
             IsEnabled = _editId is null || _editEnabled,
+            // Saving re-arms the rule from now on, so a widened scope never alerts on the
+            // events that arrived before the edit.
+            ScopeChangedUtc = DateTimeOffset.UtcNow,
             CreatedUtc = _editId is null ? DateTimeOffset.UtcNow : _editCreated,
         };
 

@@ -195,5 +195,12 @@ public static class ControlSchema
         -- cursors, so whichever polled second would silently collect nothing.
         CREATE UNIQUE INDEX ux_winlog_sources_machine ON winlog_sources(machine COLLATE NOCASE);
         """,
+
+        // v10 - a rule only fires on events at least as new as its last edit, so widening one
+        // (level Error to Debug, say) no longer alerts on the backlog the backfill window still
+        // admits (SPEC section 10.7). NULL on existing rules: no floor until their next save.
+        """
+        ALTER TABLE rules ADD COLUMN scope_changed_utc INTEGER;
+        """,
     ];
 }

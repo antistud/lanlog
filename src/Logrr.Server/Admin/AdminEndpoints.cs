@@ -1,5 +1,6 @@
 using Logrr.Contracts;
 using Logrr.Core;
+using Logrr.Core.Filters;
 using Logrr.Notify;
 using Logrr.Server.Security;
 using Logrr.Storage;
@@ -149,6 +150,13 @@ public static class AdminEndpoints
 
         admin.MapPost("/rules", (RuleRequest req, RuleStore rules) =>
         {
+            // Reject an unparseable filter here rather than storing a rule that can never match.
+            if (!string.IsNullOrWhiteSpace(req.Filter)
+                && !FilterExpression.TryParse(req.Filter, out _, out var filterError))
+            {
+                return Results.BadRequest(new { error = $"filter does not parse: {filterError}" });
+            }
+
             var id = Guid.NewGuid().ToString("N");
             rules.Create(new Rule
             {
@@ -167,6 +175,7 @@ public static class AdminEndpoints
                 MaxFiresPerHour = req.MaxFiresPerHour ?? 20,
                 IsDryRun = req.IsDryRun ?? false,
                 IsEnabled = req.IsEnabled ?? true,
+                ScopeChangedUtc = DateTimeOffset.UtcNow,
                 CreatedUtc = DateTimeOffset.UtcNow,
             });
             return Results.Created($"/api/v1/rules/{id}", new { id });

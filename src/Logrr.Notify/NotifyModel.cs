@@ -85,6 +85,15 @@ public sealed record Rule
     public bool IsEnabled { get; init; } = true;
     public string? AutoDisabledReason { get; init; }
     public DateTimeOffset? LastFiredUtc { get; init; }
+
+    /// <summary>
+    /// When the rule was last created or edited. Events older than this never fire it, so
+    /// widening a rule (lowering the level, loosening the filter) does not retroactively alert
+    /// on the backlog still inside the backfill window (SPEC §10.7). Null on rules that predate
+    /// the column — those keep the old behaviour until their next edit.
+    /// </summary>
+    public DateTimeOffset? ScopeChangedUtc { get; init; }
+
     public DateTimeOffset CreatedUtc { get; init; }
 }
 

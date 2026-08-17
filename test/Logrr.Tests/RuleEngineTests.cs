@@ -23,18 +23,43 @@ public class RuleEngineTests : IDisposable
     });
 
     private string AddRule(TriggerType trigger = TriggerType.EveryMatch, int? thresholdCount = null,
-        int cooldown = 60, bool dryRun = false, string dest = "d1")
+        int cooldown = 60, bool dryRun = false, string dest = "d1", string? filter = null,
+        int maxFires = 20, LogLevel minimumLevel = LogLevel.Error,
+        DateTimeOffset? scopeChanged = null)
     {
         var id = Guid.NewGuid().ToString("N");
         _h.Rules.Create(new Rule
         {
-            Id = id, Name = "errors", AppId = "billing",
-            MinimumLevel = LogLevel.Error, TriggerType = trigger,
+            Id = id, Name = "errors", AppId = "billing", Filter = filter,
+            MinimumLevel = minimumLevel, TriggerType = trigger,
             ThresholdCount = thresholdCount, ThresholdWindowMinutes = 10,
             CooldownMinutes = cooldown, DestinationId = dest, IsDryRun = dryRun,
+            MaxFiresPerHour = maxFires, ScopeChangedUtc = scopeChanged,
             IsEnabled = true, CreatedUtc = _now,
         });
         return id;
+    }
+
+    /// <summary>A batch of events that each dedupe separately — one delivery per event.</summary>
+    private CommitBatch DistinctBatch(int count, DateTimeOffset? ts = null)
+    {
+        var t = ts ?? _now;
+        var rows = Enumerable.Range(0, count)
+            .Select(i =>
+            {
+                var message = $"failure {i}";
+                return ((long)(i + 1), new LogEvent
+                {
+                    Timestamp = t,
+                    Level = LogLevel.Error,
+                    Template = message,
+                    Message = message,
+                    EventType = EventTypeHash.Compute(message, message),
+                    Properties = new Dictionary<string, object?>(),
+                });
+            })
+            .ToList();
+        return new CommitBatch("billing", StoragePaths.DayOf(t), rows);
     }
 
     private CommitBatch Batch(int count, DateTimeOffset? ts = null, string message = "payment failed")
@@ -52,6 +77,56 @@ public class RuleEngineTests : IDisposable
             }))
             .ToList();
         return new CommitBatch("billing", StoragePaths.DayOf(t), rows);
+    }
+
+    [Fact]
+    public void Editing_a_rule_does_not_alert_on_events_that_predate_the_edit()
+    {
+        AddDestination();
+        // Widened from Error to Debug five minutes ago — still inside the 15-minute backfill
+        // window, so without the floor the whole backlog would fire.
+        var edited = _now.AddMinutes(-5);
+        AddRule(minimumLevel: LogLevel.Debug, scopeChanged: edited, maxFires: 100);
+
+        Engine().Evaluate(DistinctBatch(37, ts: _now.AddMinutes(-10)));
+        Assert.Empty(_h.Deliveries.Query(null, null, null, null));
+
+        // Events after the edit still alert normally.
+        Engine().Evaluate(DistinctBatch(2, ts: _now.AddMinutes(-1)));
+        Assert.Equal(2, _h.Deliveries.Query(null, null, null, null).Count);
+    }
+
+    [Fact]
+    public void Hourly_fire_cap_holds_within_a_single_batch()
+    {
+        AddDestination();
+        var id = AddRule(maxFires: 20);
+
+        // 37 distinct dedupe keys arriving in one commit: the cap must stop it at 20, not
+        // let the whole batch through because the count was only checked up front.
+        Engine().Evaluate(DistinctBatch(37));
+
+        Assert.Equal(20, _h.Deliveries.Query(null, null, null, null).Count);
+        Assert.False(_h.Rules.Get(id)!.IsEnabled);
+    }
+
+    [Fact]
+    public void Unparseable_filter_disables_only_its_own_rule()
+    {
+        AddDestination();
+        // "Application % has shutdown." is a message, not an expression — the lexer rejects '%'.
+        var bad = AddRule(filter: "Application % has shutdown.");
+        var good = AddRule();
+
+        Engine().Evaluate(Batch(1));
+
+        // The bad rule must not take the good one down with it.
+        Assert.Single(_h.Deliveries.Query(null, null, null, null));
+        Assert.NotNull(_h.Rules.Get(good)!.LastFiredUtc);
+
+        var disabled = _h.Rules.Get(bad)!;
+        Assert.False(disabled.IsEnabled);
+        Assert.Contains("filter does not parse", disabled.AutoDisabledReason);
     }
 
     [Fact]

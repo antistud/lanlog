@@ -21,7 +21,13 @@ public sealed class RuleEngine(
     Func<DateTimeOffset> clock,
     Action<string>? onAutoDisable = null)
 {
-    private readonly ConcurrentDictionary<string, Func<LogEvent, bool>> _predicates = new();
+    /// <summary>
+    /// A rule's compiled filter, or the reason it would not parse. A rule with no filter has
+    /// neither and matches on level alone.
+    /// </summary>
+    private readonly record struct RulePredicate(Func<LogEvent, bool>? Match, string? Error);
+
+    private readonly ConcurrentDictionary<string, RulePredicate> _predicates = new();
 
     public void Evaluate(CommitBatch commit)
     {
@@ -37,11 +43,25 @@ public sealed class RuleEngine(
 
         foreach (var rule in applicable)
         {
-            // Backfill protection: only recent events can fire a rule (SPEC §10.7).
+            // An unparseable filter stops its own rule, not the batch. Letting the parse
+            // exception escape would skip every remaining rule and surface as an ingest
+            // write failure, so fail loud and stopped like the fire cap below (SPEC §10.7).
+            var predicate = Predicate(rule);
+            if (predicate.Error is { } filterError)
+            {
+                rules.AutoDisable(rule.Id, $"filter does not parse: {filterError}");
+                onAutoDisable?.Invoke(rule.Id);
+                continue;
+            }
+
+            // Backfill protection: only recent events can fire a rule, and never one that
+            // predates the rule's last edit — widening a rule must not alert on the backlog
+            // already inside the window (SPEC §10.7).
             var matches = commit.Rows
                 .Where(r => now - r.Event.Timestamp <= maxAge)
+                .Where(r => rule.ScopeChangedUtc is not { } since || r.Event.Timestamp >= since)
                 .Where(r => r.Event.Level >= rule.MinimumLevel)
-                .Where(r => Predicate(rule) is not { } p || p(r.Event))
+                .Where(r => predicate.Match is not { } p || p(r.Event))
                 .ToList();
 
             if (matches.Count == 0)
@@ -50,7 +70,8 @@ public sealed class RuleEngine(
             }
 
             // Per-rule hourly fire cap → auto-disable (fail loud and stopped, SPEC §10.7).
-            if (deliveries.CountForRuleSince(rule.Id, now.AddHours(-1)) >= rule.MaxFiresPerHour)
+            var firedThisHour = deliveries.CountForRuleSince(rule.Id, now.AddHours(-1));
+            if (firedThisHour >= rule.MaxFiresPerHour)
             {
                 rules.AutoDisable(rule.Id, $"exceeded {rule.MaxFiresPerHour} fires/hour");
                 onAutoDisable?.Invoke(rule.Id);
@@ -66,12 +87,25 @@ public sealed class RuleEngine(
 
             foreach (var (rowid, ev) in matches)
             {
-                EvaluateMatch(rule, commit, rowid, ev, appName, now);
+                // Re-check inside the loop: one batch can hold more distinct dedupe keys than
+                // the whole hourly cap, and a single check up front would let all of them out.
+                if (firedThisHour >= rule.MaxFiresPerHour)
+                {
+                    rules.AutoDisable(rule.Id, $"exceeded {rule.MaxFiresPerHour} fires/hour");
+                    onAutoDisable?.Invoke(rule.Id);
+                    break;
+                }
+
+                if (EvaluateMatch(rule, commit, rowid, ev, appName, now))
+                {
+                    firedThisHour++;
+                }
             }
         }
     }
 
-    private void EvaluateMatch(Rule rule, CommitBatch commit, long rowid, LogEvent ev, string? appName, DateTimeOffset now)
+    /// <summary>Records the occurrence and returns whether the rule fired for this event.</summary>
+    private bool EvaluateMatch(Rule rule, CommitBatch commit, long rowid, LogEvent ev, string? appName, DateTimeOffset now)
     {
         var eventId = EventId.Format(commit.Day, rowid);
         var dedupeKey = RenderKey(rule, ev, eventId, commit.AppId, appName);
@@ -114,6 +148,7 @@ public sealed class RuleEngine(
         }
 
         occurrences.Upsert(occurrence);
+        return shouldFire;
     }
 
     private bool ShouldFire(Rule rule, Occurrence occurrence, DateTimeOffset now)
@@ -240,13 +275,16 @@ public sealed class RuleEngine(
         };
     }
 
-    private Func<LogEvent, bool>? Predicate(Rule rule)
+    private RulePredicate Predicate(Rule rule)
     {
         if (string.IsNullOrWhiteSpace(rule.Filter))
         {
-            return null;
+            return default;
         }
-        return _predicates.GetOrAdd(rule.Filter, f => FilterExpression.Parse(f).Compile());
+        return _predicates.GetOrAdd(rule.Filter, f =>
+            FilterExpression.TryParse(f, out var expression, out var error)
+                ? new RulePredicate(expression!.Compile(), null)
+                : new RulePredicate(null, error));
     }
 
     private static string SampleJson(LogEvent ev) => JsonSerializer.Serialize(new
