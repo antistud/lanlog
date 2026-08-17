@@ -259,6 +259,18 @@ a.tile:hover { text-decoration: none; border-color: var(--border-strong); box-sh
 .field > label { font-size: var(--fs-sm); font-weight: 550; color: var(--ink-2); }
 .field .hint { font-size: var(--fs-xs); color: var(--ink-3); }
 .field .field-error { font-size: var(--fs-xs); color: var(--danger); }
+
+/* Inline notice at the top of a dialog — state the user has to know before saving. */
+.callout {
+  font-size: var(--fs-sm); color: var(--ink-2);
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--r-md); padding: var(--sp-2) var(--sp-3); margin-bottom: var(--sp-4);
+}
+.callout strong { color: var(--ink); }
+.callout.warn {
+  color: var(--danger); background: var(--danger-soft); border-color: transparent;
+}
+.callout.warn strong { color: var(--danger); }
 .input, select.input, textarea.input {
   width: 100%; font: inherit; font-size: var(--fs-md); color: var(--ink);
   background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-md);

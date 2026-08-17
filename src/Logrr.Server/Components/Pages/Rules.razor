@@ -55,6 +55,20 @@ else
 
 <Modal @bind-Open="_show" Title="@(_editId is null ? "New rule" : "Edit rule")" Wide="true">
     <ChildContent>
+        @if (_editAutoDisabledReason is not null)
+        {
+            <div class="callout warn">
+                <strong>This rule is disabled.</strong>
+                Logrr stopped it: @_editAutoDisabledReason. Saving re-enables it.
+            </div>
+        }
+        else if (_editId is not null && !_editEnabled)
+        {
+            <div class="callout">
+                <strong>This rule is disabled</strong> and will stay disabled after saving —
+                use Enable on the rules list to turn it back on.
+            </div>
+        }
         <div class="grid cols-2">
             <div class="field"><label>Name</label><input class="input" @bind="_name" placeholder="Billing errors" /></div>
             <div class="field">
@@ -129,6 +143,7 @@ else
     private int _cooldown = 60, _maxFires = 20, _thresholdCount = 5, _thresholdWindow = 10;
     private bool _dryRun = true;
     private string? _filterError;
+    private string? _editAutoDisabledReason;
 
     protected override void OnInitialized() => Load();
 
@@ -157,6 +172,7 @@ else
         _editId = r.Id;
         _filterError = null;
         _editEnabled = r.IsEnabled;
+        _editAutoDisabledReason = r.IsEnabled ? null : r.AutoDisabledReason;
         _editCreated = r.CreatedUtc;
         _name = r.Name; _appId = r.AppId ?? ""; _filter = r.Filter ?? "";
         _minLevel = r.MinimumLevel;
@@ -194,7 +210,10 @@ else
             DestinationId = _destId,
             MaxFiresPerHour = _maxFires,
             IsDryRun = _dryRun,
-            IsEnabled = _editId is null || _editEnabled,
+            // Saving an auto-disabled rule re-arms it: the edit is the operator fixing whatever
+            // tripped it, and the reason is cleared below either way — leaving it disabled would
+            // strand the rule as off with nothing left on screen to say why.
+            IsEnabled = _editId is null || _editEnabled || _editAutoDisabledReason is not null,
             // Saving re-arms the rule from now on, so a widened scope never alerts on the
             // events that arrived before the edit.
             ScopeChangedUtc = DateTimeOffset.UtcNow,
