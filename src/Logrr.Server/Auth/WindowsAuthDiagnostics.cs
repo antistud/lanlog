@@ -31,7 +31,9 @@ public sealed class WindowsAuthDiagnostics(
     /// <param name="requestHost">Host header, for the browser-zone check.</param>
     /// <param name="currentIdentity">Identity on this request, if the host passed one through.</param>
     /// <param name="refusedAccount">Identity a just-refused sign-in reported, via the query string.</param>
-    public async Task<IReadOnlyList<Check>> RunAsync(string? requestHost, string? currentIdentity, string? refusedAccount)
+    /// <param name="requestProtocol"><c>HttpRequest.Protocol</c>, for the HTTP/2 check.</param>
+    public async Task<IReadOnlyList<Check>> RunAsync(string? requestHost, string? currentIdentity, string? refusedAccount,
+        string? requestProtocol = null)
     {
         var checks = new List<Check>();
 
@@ -85,7 +87,24 @@ public sealed class WindowsAuthDiagnostics(
                 @"Enable both Windows Authentication and Anonymous Authentication on the site. The section is locked, so it cannot come from web.config: appcmd set config ""<site>"" -section:system.webServer/security/authentication/windowsAuthentication /enabled:true /commit:apphost"));
         }
 
-        // 3. The per-user link. An identity nobody claims is refused by design, so zero links
+        // 3. The protocol, but only where this process does the handshake itself: Negotiate is a
+        //    connection-level exchange and the handler is a no-op on anything above HTTP/1.1 - the
+        //    401 goes out with no WWW-Authenticate header, so the browser has nothing to answer and
+        //    the failure is completely silent. Kestrel prefers HTTP/2 over TLS, which is why this
+        //    bites over https:// from another machine and never over http://localhost.
+        if (integrated is null && !string.IsNullOrEmpty(requestProtocol))
+        {
+            checks.Add(requestProtocol.StartsWith("HTTP/1.", StringComparison.OrdinalIgnoreCase)
+                ? new Check(CheckStatus.Ok,
+                    $"This request arrived over {requestProtocol}",
+                    "Negotiate requires HTTP/1.1, and that is what this connection is using.")
+                : new Check(CheckStatus.Problem,
+                    $"This request arrived over {requestProtocol}",
+                    "Negotiate does not work above HTTP/1.1: the challenge is sent without a WWW-Authenticate header, so the browser cannot answer it and nothing appears to happen.",
+                    "With Windows sign-in enabled at startup this server caps its own endpoints at HTTP/1.1, so seeing this means the process started with the setting off - restart it. If a reverse proxy sits in front, it must either complete the Windows handshake itself or forward over HTTP/1.1."));
+        }
+
+        // 4. The per-user link. An identity nobody claims is refused by design, so zero links
         //    means Windows sign-in is working and still refusing everyone.
         var linked = users.List().Count(u => !string.IsNullOrEmpty(u.WindowsAccount));
         checks.Add(linked == 0
@@ -97,7 +116,7 @@ public sealed class WindowsAuthDiagnostics(
                 $"{linked} account{(linked == 1 ? " is" : "s are")} linked to a Windows account",
                 "Each must match the identity the server sees, character for character (case aside)."));
 
-        // 4. The identity itself - the single most useful fact here, because a link that does not
+        // 5. The identity itself - the single most useful fact here, because a link that does not
         //    match character for character fails exactly like no link at all.
         if (!string.IsNullOrEmpty(refusedAccount))
         {
@@ -113,7 +132,7 @@ public sealed class WindowsAuthDiagnostics(
                 $"The server sees you as {currentIdentity}. That exact string is what an account must be linked to."));
         }
 
-        // 5. Silent SSO is a browser-side decision Logrr cannot influence, and a dotted host name
+        // 6. Silent SSO is a browser-side decision Logrr cannot influence, and a dotted host name
         //    is the usual reason a working setup still prompts (or fails outright).
         if (!string.IsNullOrEmpty(requestHost))
         {

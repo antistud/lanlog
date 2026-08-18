@@ -165,7 +165,7 @@
         if (ShowDiagnostics)
         {
             var identity = Http?.User.Identity is { IsAuthenticated: true, Name: { Length: > 0 } name } ? name : null;
-            _checks = await Diagnostics.RunAsync(Http?.Request.Host.Value, identity, Account);
+            _checks = await Diagnostics.RunAsync(Http?.Request.Host.Value, identity, Account, Http?.Request.Protocol);
         }
     }
 }

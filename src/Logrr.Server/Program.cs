@@ -14,10 +14,12 @@ using Logrr.Server.WindowsEvents;
 using Logrr.Storage;
 using Logrr.Storage.Control;
 using Logrr.Storage.Sql;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.Negotiate;
 using Microsoft.AspNetCore.Cors.Infrastructure;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -244,7 +246,21 @@ builder.Services.AddOptions<CorsOptions>().Configure<IngestCorsPolicy>((cors, po
         .WithHeaders("Content-Type", "X-Logrr-ApiKey", "X-Seq-ApiKey", "Authorization")));
 
 var maxRequestBytes = cfgRoot.GetValue("Ingest:MaxRequestBytes", 10_485_760L);
-builder.WebHost.ConfigureKestrel(k => k.Limits.MaxRequestBodySize = maxRequestBytes);
+builder.WebHost.ConfigureKestrel(k =>
+{
+    k.Limits.MaxRequestBodySize = maxRequestBytes;
+
+    // Negotiate is a connection-level handshake and the handler simply does nothing on HTTP/2 or
+    // HTTP/3 - no WWW-Authenticate header, so the browser gets a bare 401 and the user never sees
+    // a sign-in. Over HTTPS Kestrel negotiates HTTP/2 by default, which is exactly the LAN case:
+    // works on http://localhost, silently dead over https://server. Cap the endpoints at HTTP/1.1
+    // whenever Windows sign-in is on. Nothing here needs HTTP/2 (Blazor's circuit is a WebSocket,
+    // itself HTTP/1.1), and under IIS this whole callback is moot - IIS is the server there.
+    if (windowsAuth.Enabled)
+    {
+        k.ConfigureEndpointDefaults(o => o.Protocols = HttpProtocols.Http1);
+    }
+});
 // Under IIS in-process hosting Kestrel is not the server, so the line above is ignored and
 // IIS's own 30 MB default applies instead. Mirror the limit onto the IIS server so raising
 // Ingest:MaxRequestBytes past 30 MB doesn't start rejecting batches only when hosted.
@@ -277,6 +293,27 @@ var app = builder.Build();
 // Which backend is live is the first thing you want to know from a support log — it explains
 // where the data went and which half of the setup guide applies.
 app.Logger.LogInformation("Logrr storage backend: {Backend}", dialect.Describe());
+
+// Windows sign-in spans three places that cannot see each other - the host's own configuration,
+// this setting, and the per-user link - and a failure in any of them looks identical from the
+// browser. State what this process actually came up with, so the support log answers "why am I
+// still looking at a password form?" without anyone having to reach the diagnostics page.
+if (windowsAuth.Enabled)
+{
+    var hostAuth = app.Services.GetServices<IServerIntegratedAuth>().LastOrDefault();
+    app.Logger.LogInformation("Windows sign-in enabled (auto sign-in {Auto}); host integrated auth: {Host}",
+        windowsAuth.AutoSignIn ? "on" : "off",
+        hostAuth is null
+            ? "none - this process performs the Negotiate handshake itself, over HTTP/1.1"
+            : hostAuth.IsEnabled
+                ? $"provided by the host under scheme '{hostAuth.AuthenticationScheme}'"
+                : "the host owns Windows authentication and it is TURNED OFF - the handshake cannot complete");
+}
+else
+{
+    // The most common cause of "Windows sign-in does nothing", and invisible from the browser.
+    app.Logger.LogInformation("Windows sign-in is off (Logrr:Auth:Windows:Enabled = false)");
+}
 
 // First-run bootstrap before serving.
 using (var scope = app.Services.CreateScope())

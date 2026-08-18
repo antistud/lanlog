@@ -19,6 +19,11 @@
 .EXAMPLE
     # from the repo root on the build/server box, after `dotnet publish ... /p:PublishProfile=IIS`
     .\scripts\deploy-iis.ps1 -Port 5443 -HostHeader lanticket.credit.com
+
+.EXAMPLE
+    # same, with Windows integrated sign-in (IIS site config + appsettings, both re-applied
+    # on every run - see -WindowsAuth and docs/SETUP.md section 8)
+    .\scripts\deploy-iis.ps1 -Port 5443 -WindowsAuth
 #>
 [CmdletBinding()]
 param(
@@ -40,7 +45,17 @@ param(
     [string]$DataPath     = "C:\Logrr",
     [int]   $Port         = 5443,
     [string]$HostHeader   = "",
-    [ValidateSet("outofprocess","inprocess")][string]$HostingModel = "outofprocess"
+    [ValidateSet("outofprocess","inprocess")][string]$HostingModel = "outofprocess",
+    # Windows integrated sign-in (docs/SETUP.md section 8). It needs two things that live in two
+    # places neither of which can see the other: Windows Authentication on the IIS site, and
+    # Logrr:Auth:Windows:Enabled in appsettings.json. Doing it by hand goes wrong twice - the IIS
+    # section is locked so web.config cannot carry it, and step 2 below mirrors the published
+    # appsettings.json over the deployed one, silently reverting the edit on the next deploy.
+    # So it belongs here, applied after the copy, on every run.
+    [switch]$WindowsAuth,
+    # $false shows a "Sign in with Windows" button instead of redirecting anonymous visitors
+    # straight through the handshake. Only meaningful with -WindowsAuth.
+    [bool]  $AutoSignIn   = $true
 )
 
 $ErrorActionPreference = "Stop"
@@ -78,7 +93,10 @@ $webConfig = @"
       <handlers>
         <add name="aspNetCore" path="*" verb="*" modules="AspNetCoreModuleV2" resourceType="Unspecified" />
       </handlers>
-      <aspNetCore processPath=".\Logrr.exe" stdoutLogEnabled="true" stdoutLogFile=".\logs\stdout" hostingModel="$HostingModel">
+      <!-- forwardWindowsAuthToken is the default, but out-of-process hosting depends on it
+           entirely: IIS completes the Windows handshake and hands the token to Logrr in the
+           MS-ASPNETCORE-WINAUTHTOKEN header. Without it Windows sign-in cannot work here. -->
+      <aspNetCore processPath=".\Logrr.exe" stdoutLogEnabled="true" stdoutLogFile=".\logs\stdout" hostingModel="$HostingModel" forwardWindowsAuthToken="true">
         <environmentVariables>
           <environmentVariable name="LOGRR_DATA_PATH" value="$DataPath" />
           <environmentVariable name="ASPNETCORE_ENVIRONMENT" value="Production" />
@@ -94,6 +112,23 @@ $webConfig = @"
 "@
 [System.IO.File]::WriteAllText((Join-Path $SitePath "web.config"), $webConfig, (New-Object System.Text.UTF8Encoding($false)))
 Ok "web.config written (ASCII, no BOM, hostingModel=$HostingModel)"
+
+# 3b) Windows sign-in, half one: the app's own switch. Read once at startup, and the copy in
+#     step 2 just replaced this file with the published one - where it ships off.
+$cfgPath = Join-Path $SitePath "appsettings.json"
+if ($WindowsAuth) {
+    $cfg = Get-Content $cfgPath -Raw | ConvertFrom-Json
+    if (-not $cfg.Logrr)      { $cfg      | Add-Member -NotePropertyName Logrr   -NotePropertyValue ([pscustomobject]@{}) }
+    if (-not $cfg.Logrr.Auth) { $cfg.Logrr | Add-Member -NotePropertyName Auth   -NotePropertyValue ([pscustomobject]@{}) }
+    if (-not $cfg.Logrr.Auth.Windows) { $cfg.Logrr.Auth | Add-Member -NotePropertyName Windows -NotePropertyValue ([pscustomobject]@{}) }
+    $cfg.Logrr.Auth.Windows | Add-Member -NotePropertyName Enabled    -NotePropertyValue $true       -Force
+    $cfg.Logrr.Auth.Windows | Add-Member -NotePropertyName AutoSignIn -NotePropertyValue $AutoSignIn -Force
+    [System.IO.File]::WriteAllText($cfgPath, ($cfg | ConvertTo-Json -Depth 12), (New-Object System.Text.UTF8Encoding($false)))
+    Ok "Windows sign-in enabled in appsettings.json (AutoSignIn=$AutoSignIn)"
+} else {
+    Warn "Windows sign-in NOT configured (no -WindowsAuth). Users sign in with a password."
+    Warn "  Do not hand-edit $cfgPath - step 2 mirrors it from the publish folder on every deploy."
+}
 
 # 4) App pool: No Managed Code, AlwaysRunning, no idle/periodic recycle.
 if (-not (Test-Path "IIS:\AppPools\$PoolName")) { New-WebAppPool -Name $PoolName | Out-Null }
@@ -121,6 +156,27 @@ if (-not (Test-Path "IIS:\Sites\$SiteName")) {
     Ok "Site '$SiteName' updated (physicalPath + pool)"
 }
 
+# 6b) Windows sign-in, half two: the IIS site. system.webServer/security/authentication is locked
+#     at server level, so this cannot come from the web.config written above - it has to be set on
+#     applicationHost.config, which is what /commit:apphost does. Both schemes are required:
+#     Windows answers the app's challenge on /auth/windows, and Anonymous keeps token ingest, the
+#     health endpoint and the password form reachable for everything that has no Windows identity.
+if ($WindowsAuth) {
+    $appcmd = Join-Path $env:windir "system32\inetsrv\appcmd.exe"
+    foreach ($section in "windowsAuthentication", "anonymousAuthentication") {
+        & $appcmd set config "$SiteName" -section:"system.webServer/security/authentication/$section" /enabled:true /commit:apphost | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            # The usual cause for windowsAuthentication: the role feature is not installed, so IIS
+            # does not know the section at all. Nothing later can work, so stop here and say so.
+            throw "appcmd could not enable $section on site '$SiteName' (exit $LASTEXITCODE).`n" +
+                  "If this is windowsAuthentication, install the role feature first, then re-run:`n" +
+                  "  Windows Server: Install-WindowsFeature Web-Windows-Auth`n" +
+                  "  Windows client: Enable-WindowsOptionalFeature -Online -FeatureName IIS-WindowsAuthentication"
+        }
+    }
+    Ok "IIS Windows + Anonymous Authentication enabled on site '$SiteName'"
+}
+
 Start-WebAppPool -Name $PoolName
 Start-Website    -Name $SiteName
 Ok "Started."
@@ -140,3 +196,14 @@ if (-not $stdout -and -not $internal) {
 
 Info "`nNow browse:  https://$(if($HostHeader){$HostHeader}else{'localhost'}):$Port/"
 Info "First sign-in:  admin  /  the password in $DataPath\FIRST-RUN-CREDENTIALS.txt"
+
+if ($WindowsAuth) {
+    Info "`nWindows sign-in is on, and still admits nobody until accounts are linked:"
+    Info "  Admin -> Users -> Windows account, exactly as Windows reports it (CONTOSO\jrhoades)."
+    Info "  /login?local=1&diag=1 reports what this server can see, including the exact identity."
+    if ($HostHeader -and $HostHeader.Contains(".")) {
+        Warn "  '$HostHeader' is a dotted name, so browsers do not put it in the Local intranet zone:"
+        Warn "  users get a credential prompt instead of a silent sign-in. Reach the server by its"
+        Warn "  short hostname, or add the site to that zone (by Group Policy for everyone)."
+    }
+}

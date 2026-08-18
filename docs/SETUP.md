@@ -109,6 +109,11 @@ account and the normal session cookie is issued, so roles and per-app access are
 refused and sent to the password form — Logrr never provisions an account from a domain
 identity on its own.
 
+Steps a and b are exactly what `deploy-iis.ps1 -WindowsAuth` does, and it re-applies them on
+every run — which matters, because step 2 of that script mirrors the published
+`appsettings.json` over the deployed one and would otherwise revert step b. Do them by hand
+only if you are not deploying with the script.
+
 **a. Enable it in IIS.** On the site, enable **Windows Authentication** *and* leave
 **Anonymous Authentication** enabled. Both are required: anonymous keeps token ingest, the
 health endpoint and the password form reachable, and Windows answers the app's challenge on
@@ -154,6 +159,16 @@ out. Signing out lands there too, otherwise "sign out" would immediately sign yo
 - *Prompted for credentials instead of being signed in silently* — the site is not in the
   browser's Local intranet zone. Use the server's short hostname, not an IP or an external
   FQDN, or add the site to that zone.
+- *Nothing happens at all over `https://`, but it works on `http://localhost`* — only when
+  Logrr runs its own listener rather than sitting behind IIS. Negotiate is a connection-level
+  handshake and does nothing above HTTP/1.1: the challenge goes out with no `WWW-Authenticate`
+  header, so the browser has nothing to answer. Logrr caps its endpoints at HTTP/1.1 whenever
+  Windows sign-in is enabled *at startup*, so this means the process started with the setting
+  off — restart it. The diagnostics report the protocol of the request that reached them.
+
+The startup line in `logrr-internal*.log` states what the running process actually has —
+whether Windows sign-in is on, and whether the host is providing the handshake — which
+settles steps a and b without a browser.
 
 ## 9. Windows Event Log collection (optional)
 
