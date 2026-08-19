@@ -319,6 +319,12 @@ build would ship a working SQLite backend and a SQL Server backend that dies on 
 The slug is a convenience for humans reading config files and is **not** trusted; lookup
 is by prefix, verification by constant-time hash compare. Shown once at creation.
 
+The stored `prefix` is the `lg_{appId}_` head **plus the first 8 characters of the random
+tail** — e.g. `lg_myapp_xxxxxxxx`. The tail is what makes it unique: `tokens.prefix` is
+UNIQUE, so a prefix cut from the head alone would be identical for every token of an app and
+the app could only ever hold one. Tokens issued under that earlier head-only scheme are still
+accepted — the authenticator retries the lookup with it — but nothing writes it any more.
+
 ### 5.3 Level mapping
 
 | Value | Serilog | MEL |

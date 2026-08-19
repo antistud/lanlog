@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using Logrr.Contracts;
 using Logrr.Server.Security;
 using Logrr.Storage.Control;
@@ -43,7 +43,10 @@ public sealed class TokenAuthenticator(TokenStore tokens, AppStore apps, IMemory
         var entry = cache.GetOrCreate(prefix, e =>
         {
             e.AbsoluteExpirationRelativeToNow = CacheTtl;
-            var token = tokens.FindByPrefix(prefix);
+            // Fall back to the retired prefix scheme so tokens already in the field keep
+            // working; the hash compare below is what actually accepts them either way.
+            var token = tokens.FindByPrefix(prefix)
+                ?? tokens.FindByPrefix(TokenSecret.LegacyPrefix(secret));
             if (token is null)
             {
                 return null;

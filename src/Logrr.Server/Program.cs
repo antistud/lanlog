@@ -1,4 +1,4 @@
-using Logrr.Notify;
+﻿using Logrr.Notify;
 using Logrr.Realtime;
 using Logrr.Server;
 using Logrr.Server.Admin;
@@ -18,6 +18,7 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.Negotiate;
 using Microsoft.AspNetCore.Cors.Infrastructure;
+using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Serilog;

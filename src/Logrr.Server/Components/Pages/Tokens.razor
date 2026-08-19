@@ -1,4 +1,4 @@
-@page "/apps/{AppId}/tokens"
+﻿@page "/apps/{AppId}/tokens"
 @attribute [Authorize(Roles = "Admin")]
 @rendermode InteractiveServer
 @inject Logrr.Storage.Control.TokenStore TokenSvc
@@ -8,7 +8,7 @@
 <PageTitle>@AppId · tokens — Logrr</PageTitle>
 
 <AppTabs AppId="@AppId" Active="tokens" Title="Tokens">
-    <button class="btn primary" @onclick="() => _showCreate = true">＋ New token</button>
+    <button class="btn primary" @onclick="OpenCreate">＋ New token</button>
 </AppTabs>
 
 @if (_tokens.Count == 0)
@@ -66,6 +66,10 @@ else
             <label class="flex gap-2 items-center" style="cursor:pointer; font-weight:400"><input type="checkbox" @bind="_ingest" /> Ingest</label>
             <label class="flex gap-2 items-center" style="cursor:pointer; font-weight:400"><input type="checkbox" @bind="_read" /> Read</label>
         </div>
+        @if (_error is not null)
+        {
+            <div class="badge danger">@_error</div>
+        }
     </ChildContent>
     <Footer>
         <button class="btn ghost" @onclick="() => _showCreate = false">Cancel</button>
@@ -94,26 +98,51 @@ else
     private string _name = "";
     private bool _ingest = true, _read = true;
     private string? _secret;
+    private string? _error;
     private bool _copied;
 
     protected override void OnInitialized() => Load();
+
+    private void OpenCreate()
+    {
+        _error = null;
+        _showCreate = true;
+    }
 
     private void Load() => _tokens = TokenSvc.ListByApp(AppId);
 
     private void Create()
     {
+        _error = null;
         var scopes = (_ingest ? TokenScopes.Ingest : 0) | (_read ? TokenScopes.Read : 0);
-        var secret = Logrr.Server.Security.TokenSecret.Generate(AppId);
-        TokenSvc.Create(new Logrr.Storage.Control.TokenRecord
+        if (scopes == 0)
         {
-            Id = Guid.NewGuid().ToString("N"),
-            AppId = AppId,
-            Name = string.IsNullOrWhiteSpace(_name) ? null : _name,
-            Prefix = Logrr.Server.Security.TokenSecret.Prefix(secret),
-            Hash = Logrr.Server.Security.TokenSecret.Hash(secret),
-            Scopes = scopes,
-            CreatedUtc = DateTimeOffset.UtcNow,
-        });
+            _error = "pick at least one scope";
+            return;
+        }
+
+        var secret = Logrr.Server.Security.TokenSecret.Generate(AppId);
+        try
+        {
+            TokenSvc.Create(new Logrr.Storage.Control.TokenRecord
+            {
+                Id = Guid.NewGuid().ToString("N"),
+                AppId = AppId,
+                Name = string.IsNullOrWhiteSpace(_name) ? null : _name,
+                Prefix = Logrr.Server.Security.TokenSecret.Prefix(secret),
+                Hash = Logrr.Server.Security.TokenSecret.Hash(secret),
+                Scopes = scopes,
+                CreatedUtc = DateTimeOffset.UtcNow,
+            });
+        }
+        catch (Exception ex)
+        {
+            // An unhandled throw here tears down the circuit, and the dialog just sits there
+            // with no clue why. Keep the failure on the form where it happened.
+            _error = ex.Message;
+            return;
+        }
+
         _showCreate = false;
         _name = "";
         _copied = false;
