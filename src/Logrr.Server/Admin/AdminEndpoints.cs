@@ -121,6 +121,18 @@ public static class AdminEndpoints
             return Results.Created($"/api/v1/destinations/{id}", new { id });
         });
 
+        admin.MapPost("/destinations/{id}/enable", (string id, DestinationStore dests) =>
+        { dests.SetEnabled(id, true); return Results.NoContent(); });
+        admin.MapPost("/destinations/{id}/disable", (string id, DestinationStore dests) =>
+        { dests.SetEnabled(id, false); return Results.NoContent(); });
+
+        // Takes the rules that deliver here with it — they cannot outlive their destination.
+        admin.MapDelete("/destinations/{id}", (string id, DestinationDeleter deleter) =>
+        {
+            var result = deleter.Delete(id);
+            return result is null ? Results.NotFound(new { error = "destination not found" }) : Results.Ok(result);
+        });
+
         admin.MapPost("/destinations/{id}/test", (string id, ManualTicketService manual) =>
         {
             var result = manual.Test(id);

@@ -160,6 +160,21 @@ public sealed class DestinationStore(ControlDatabase db)
         cmd.ExecuteNonQuery();
     }
 
+    /// <summary>
+    /// Switch a destination off without deleting it: rules pointing at it stop delivering
+    /// (see <see cref="RuleEngine"/>) and it drops out of the manual "create ticket" picker,
+    /// but its config, rules and delivery history are all still there to switch back on.
+    /// </summary>
+    public void SetEnabled(string id, bool enabled)
+    {
+        using var conn = db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = $"UPDATE {Table} SET is_enabled = @en WHERE id = @id;";
+        cmd.P("@en", enabled ? 1 : 0);
+        cmd.P("@id", id);
+        cmd.ExecuteNonQuery();
+    }
+
     public void Delete(string id)
     {
         using var conn = db.Open();

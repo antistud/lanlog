@@ -681,7 +681,9 @@ at most 4 times a second regardless of ingest rate.
    delete that removes the app and its events, confirmed by typing the app id.
 7. **Tokens** — create/name/scope/expiry/revoke; secret shown once in a modal with copy
    and an explicit "I've saved this" confirmation.
-8. **Destinations** — webhook config, template editor with live preview, test button.
+8. **Destinations** — webhook config, template editor with live preview, test button,
+   enable/disable, and delete (which takes the rules delivering there with it — a rule
+   cannot exist without a destination).
 9. **Rules** — list with live fire counts; editor with filter box, threshold, dedupe,
    cooldown, destination, dry-run toggle.
 10. **Deliveries** — outbound queue: pending, delivered, failed, dead-lettered. Request
@@ -890,6 +892,8 @@ An automated ticket creator wired to a firehose is a foot-gun. All of these ship
 
 ```
 GET|POST      /api/v1/destinations
+DELETE        /api/v1/destinations/{id}               with the rules that deliver there
+POST          /api/v1/destinations/{id}/enable | /disable
 GET|PUT|DELETE /api/v1/destinations/{id}
 POST          /api/v1/destinations/{id}/test
 POST          /api/v1/destinations/{id}/preview      body: { template, sampleEventId }

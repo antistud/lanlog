@@ -156,6 +156,7 @@ builder.Services.AddSingleton<DeliveryStore>();
 builder.Services.AddSingleton<OccurrenceStore>();
 builder.Services.AddSingleton<TicketLinkStore>();
 builder.Services.AddSingleton<ManualTicketService>();
+builder.Services.AddSingleton<DestinationDeleter>();
 builder.Services.AddSingleton(sp => new RuleEngine(
     sp.GetRequiredService<RuleStore>(),
     sp.GetRequiredService<DestinationStore>(),

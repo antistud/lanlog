@@ -113,6 +113,29 @@ public sealed class RuleStore(ControlDatabase db)
         return list;
     }
 
+    /// <summary>
+    /// Every rule delivering to one destination. A rule cannot exist without its destination
+    /// (<c>destination_id</c> is a NOT NULL foreign key), so this is what a destination delete
+    /// has to account for.
+    /// </summary>
+    public IReadOnlyList<Rule> ListByDestination(string destinationId)
+    {
+        using var conn = db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = $"SELECT * FROM {Table} WHERE destination_id = @dest ORDER BY name;";
+        cmd.P("@dest", destinationId);
+        using var r = cmd.ExecuteReader();
+        var list = new List<Rule>();
+        while (r.Read()) list.Add(Map(r));
+        return list;
+    }
+
+    /// <summary>Drop a single rule, by id.</summary>
+    public void Delete(string id)
+    {
+        Exec($"DELETE FROM {Table} WHERE id = @id;", ("@id", id));
+    }
+
     /// <summary>Drop the rules scoped to one app (app deletion). All-apps rules stay.</summary>
     public int DeleteByApp(string appId)
     {

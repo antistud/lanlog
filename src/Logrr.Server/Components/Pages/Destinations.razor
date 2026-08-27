@@ -3,6 +3,7 @@
 @rendermode InteractiveServer
 @using Logrr.Notify
 @inject Logrr.Notify.DestinationStore Store
+@inject Logrr.Notify.DestinationDeleter Deleter
 @inject Logrr.Notify.ManualTicketService Manual
 @inject Logrr.Notify.ISecretProtector Protector
 
@@ -34,17 +35,19 @@ else
                         else { <span class="badge good">enabled</span> }
                     </div>
                 </div>
-                <div class="flex between items-center mt-2">
+                <div class="flex between items-center wrap gap-2 mt-2">
                     <span class="meta">
                         <span class="badge">@(d.Kind == DestinationKind.Smtp ? "SMTP" : "Webhook")</span>
                         @if (d.Kind == DestinationKind.Smtp) { <text> @d.SmtpHost:@d.SmtpPort · @d.SmtpSecurity</text> }
                         else { <text> @d.Method · @(d.AuthMode) auth</text> }
                         @(d.ConsecutiveFailures > 0 ? $" · {d.ConsecutiveFailures} recent failures" : "")
                     </span>
-                    <div class="flex gap-2">
+                    <div class="flex gap-2 wrap">
                         <button class="btn sm" @onclick="() => OpenEdit(d)">Edit</button>
                         <button class="btn sm" @onclick="() => Test(d.Id)">Test</button>
-                        <button class="btn danger sm" @onclick="() => Delete(d.Id)">Delete</button>
+                        <button class="btn sm" title="@(d.IsEnabled ? "Stop rules delivering here, keeping the config" : "Start delivering here again")"
+                                @onclick="() => ToggleEnabled(d)">@(d.IsEnabled ? "Disable" : "Enable")</button>
+                        <button class="btn danger sm" @onclick="() => OpenDelete(d)">Delete</button>
                     </div>
                 </div>
                 @if (_testMsg.TryGetValue(d.Id, out var msg)) { <div class="badge @(_testOk.GetValueOrDefault(d.Id) ? "good" : "danger") mt-2">@msg</div> }
@@ -52,6 +55,34 @@ else
         }
     </div>
 }
+
+<Modal @bind-Open="_showDelete" Title="@($"Delete {_deleteName}?")">
+    <ChildContent>
+        @if (_deleteRules.Count > 0)
+        {
+            <div class="callout warn">
+                <strong>@_deleteRules.Count rule(s) deliver here and will be deleted too.</strong>
+                A rule cannot exist without a destination, so there is nothing to re-point them at.
+                Disable the destination instead if you only want to stop alerts for now.
+            </div>
+            <ul class="meta" style="margin:0 0 var(--sp-4) var(--sp-4)">
+                @foreach (var r in _deleteRules.Take(8)) { <li>@r.Name</li> }
+                @if (_deleteRules.Count > 8) { <li>…and @(_deleteRules.Count - 8) more</li> }
+            </ul>
+        }
+        else
+        {
+            <div class="callout">No rules deliver here. Past deliveries stay in the log.</div>
+        }
+        @if (_deleteError is not null) { <div class="badge danger">@_deleteError</div> }
+    </ChildContent>
+    <Footer>
+        <button class="btn ghost" @onclick="() => _showDelete = false">Cancel</button>
+        <button class="btn danger" @onclick="ConfirmDelete">
+            @(_deleteRules.Count > 0 ? $"Delete it and {_deleteRules.Count} rule(s)" : "Delete destination")
+        </button>
+    </Footer>
+</Modal>
 
 <Modal @bind-Open="_show" Title="@(_editId is null ? "New destination" : "Edit destination")" Wide="true">
     <ChildContent>
@@ -163,6 +194,12 @@ else
 
     private bool _show;
     private string? _editId;
+    private bool _enabled = true;
+
+    private bool _showDelete;
+    private string _deleteId = "", _deleteName = "";
+    private IReadOnlyList<Rule> _deleteRules = [];
+    private string? _deleteError;
     private DestinationKind _kind = DestinationKind.Webhook;
     private string _name = "", _url = "", _secret = "", _idPath = "", _urlPath = "", _urlHint = "";
     private string _method = "POST", _contentType = "application/json";
@@ -194,6 +231,7 @@ else
         _smtpHost = ""; _smtpUser = ""; _smtpFrom = ""; _smtpTo = ""; _smtpPort = 587;
         _smtpSecurity = SmtpSecurity.StartTls; _emailHtml = false;
         _subject = "[{{app.name}}] {{event.level}}: {{event.message}}";
+        _enabled = true;
         _show = true;
     }
 
@@ -209,6 +247,7 @@ else
         _smtpFrom = d.SmtpFrom ?? ""; _smtpTo = d.SmtpTo ?? ""; _smtpPort = d.SmtpPort;
         _smtpSecurity = d.SmtpSecurity; _emailHtml = d.IsHtmlEmail;
         _subject = d.SmtpSubjectTemplate;
+        _enabled = d.IsEnabled;
         _show = true;
     }
 
@@ -290,7 +329,9 @@ else
             SmtpTo = string.IsNullOrWhiteSpace(_smtpTo) ? null : _smtpTo,
             SmtpSubjectTemplate = string.IsNullOrWhiteSpace(_subject)
                 ? "[{{app.name}}] {{event.level}}: {{event.message}}" : _subject,
-            IsEnabled = true,
+            // Carried through, not hardcoded: saving an edit to a disabled destination must not
+            // quietly switch it back on.
+            IsEnabled = _enabled,
             CreatedUtc = DateTimeOffset.UtcNow,
         };
 
@@ -318,5 +359,36 @@ else
         _testMsg[id] = r.Error ?? "Test delivery queued.";
     }
 
-    private void Delete(string id) { Store.Delete(id); Load(); }
+    private void ToggleEnabled(Destination d)
+    {
+        Store.SetEnabled(d.Id, !d.IsEnabled);
+        Load();
+    }
+
+    private void OpenDelete(Destination d)
+    {
+        _deleteId = d.Id;
+        _deleteName = d.Name;
+        _deleteRules = Deleter.RulesUsing(d.Id);
+        _deleteError = null;
+        _showDelete = true;
+    }
+
+    private void ConfirmDelete()
+    {
+        try
+        {
+            Deleter.Delete(_deleteId);
+        }
+        catch (Exception ex)
+        {
+            // Keep the failure on the dialog rather than tearing down the circuit.
+            _deleteError = ex.Message;
+            return;
+        }
+        _showDelete = false;
+        _testMsg.Remove(_deleteId);
+        _testOk.Remove(_deleteId);
+        Load();
+    }
 }
