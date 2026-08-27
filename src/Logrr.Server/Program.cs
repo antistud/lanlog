@@ -200,6 +200,10 @@ builder.Services.AddSingleton<IngestService>();
 builder.Services.AddSingleton<TokenAuthenticator>();
 builder.Services.AddSingleton<FirstRunBootstrapper>();
 
+// Deleting an app touches storage, alerting and the collector at once, so it lives in one
+// service rather than being re-implemented by each caller (the settings page and the API).
+builder.Services.AddSingleton<AppDeleter>();
+
 var windowsAuth = new WindowsAuthOptions
 {
     Enabled = cfgRoot.GetValue("Auth:Windows:Enabled", false),

@@ -304,6 +304,12 @@ build would ship a working SQLite backend and a SQL Server backend that dies on 
 | `IndexedProperties` | string[], max 8 |
 | `IsEnabled` | disabled → ingest 403, data retained |
 
+**Deletion** is irreversible and takes everything scoped to the app with it: its partitions,
+tokens, app-scoped rules and their occurrence rollups, saved searches, acknowledgements,
+ticket links, delivery history, and any Windows event source collecting into it (which would
+otherwise re-create the app on its next poll). All-apps rules are kept. There is no export
+step and no archive.
+
 ### 5.2 Token
 
 | Field | Notes |
@@ -671,7 +677,8 @@ at most 4 times a second regardless of ingest rate.
    request end to end: every event carrying that trace id, **across apps**, as a waterfall —
    nested by span, positioned and sized by time, one row per event, each linking back to its
    detail. Scanning is bounded to the partitions around the event it was opened from.
-6. **App settings** — retention, size cap, minimum level, indexed properties.
+6. **App settings** — retention, size cap, minimum level, indexed properties, and a
+   delete that removes the app and its events, confirmed by typing the app id.
 7. **Tokens** — create/name/scope/expiry/revoke; secret shown once in a modal with copy
    and an explicit "I've saved this" confirmation.
 8. **Destinations** — webhook config, template editor with live preview, test button.

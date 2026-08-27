@@ -2,6 +2,13 @@
 @attribute [Authorize(Roles = "Admin")]
 @rendermode InteractiveServer
 @inject Logrr.Storage.Control.AppStore Apps
+@inject Logrr.Storage.Control.TokenStore Tokens
+@inject Logrr.Storage.Control.SavedSearchStore Searches
+@inject Logrr.Server.WindowsEvents.WindowsEventSettings Winlog
+@inject Logrr.Notify.RuleStore Rules
+@inject Logrr.Storage.StatsReader Stats
+@inject Logrr.Server.Admin.AppDeleter Deleter
+@inject NavigationManager Nav
 
 <PageTitle>@AppId · settings — Logrr</PageTitle>
 
@@ -48,6 +55,47 @@ else
             </div>
         </div>
     </div>
+
+    <div class="card" style="max-width:640px; border-color: color-mix(in srgb, var(--danger) 40%, var(--border))">
+        <div class="card-head">
+            <div>
+                <h3>Delete app</h3>
+                <div class="meta">
+                    Removes @Format(_events) event(s) (@FormatBytes(_bytes)) along with this app's tokens,
+                    rules, saved searches and alert history. This cannot be undone.
+                </div>
+            </div>
+            <button class="btn danger" @onclick="OpenDelete">Delete app</button>
+        </div>
+    </div>
+
+    <Modal @bind-Open="_showDelete" Title="@($"Delete {AppId}?")">
+        <ChildContent>
+            <div class="callout warn">
+                <strong>@Format(_events) event(s), @FormatBytes(_bytes) on disk, deleted for good.</strong>
+                The app's tokens stop working immediately — anything still sending logs with them
+                starts getting 401s.
+            </div>
+            <ul class="meta" style="margin:0 0 var(--sp-4) var(--sp-4)">
+                <li>@_tokenCount token(s) — deleted, not revoked</li>
+                <li>@_ruleCount alerting rule(s) scoped to this app (all-apps rules are kept)</li>
+                <li>@_searchCount saved search(es), plus every acknowledgement and ticket link</li>
+                @if (_sourceCount > 0)
+                {
+                    <li>@_sourceCount Windows event source(s) collecting into this app — collection stops</li>
+                }
+            </ul>
+            <div class="field">
+                <label>Type <code>@AppId</code> to confirm</label>
+                <input class="input mono" @bind="_confirm" @bind:event="oninput" placeholder="@AppId" />
+            </div>
+            @if (_deleteError is not null) { <div class="badge danger">@_deleteError</div> }
+        </ChildContent>
+        <Footer>
+            <button class="btn ghost" @onclick="() => _showDelete = false">Cancel</button>
+            <button class="btn danger" disabled="@(_confirm != AppId)" @onclick="Delete">Delete this app</button>
+        </Footer>
+    </Modal>
 }
 
 @code {
@@ -58,6 +106,12 @@ else
     private int _retention, _maxSize;
     private LogLevel _minLevel;
     private bool _enabled, _saved;
+
+    private bool _showDelete;
+    private string _confirm = "";
+    private string? _deleteError;
+    private long _events, _bytes;
+    private int _tokenCount, _ruleCount, _searchCount, _sourceCount;
 
     protected override void OnInitialized()
     {
@@ -70,7 +124,57 @@ else
         _maxSize = _app.MaxSizeMb;
         _minLevel = _app.MinimumLevel;
         _enabled = _app.IsEnabled;
+
+        var stats = Stats.GetStats(AppId, DateTimeOffset.UtcNow);
+        _events = stats.TotalEvents;
+        _bytes = stats.StorageBytes;
     }
+
+    /// <summary>
+    /// Counted when the dialog opens rather than on load: these numbers are what the operator is
+    /// deciding against, and they matter nowhere else on the page.
+    /// </summary>
+    private void OpenDelete()
+    {
+        _confirm = "";
+        _deleteError = null;
+        _tokenCount = Tokens.ListByApp(AppId).Count;
+        _ruleCount = Rules.ListByApp(AppId).Count;
+        _searchCount = Searches.ListByApp(AppId).Count;
+        _sourceCount = Winlog.Sources().Count(s => s.AppId == AppId);
+        _showDelete = true;
+    }
+
+    private void Delete()
+    {
+        if (_confirm != AppId) { return; }
+        try
+        {
+            Deleter.Delete(AppId);
+        }
+        catch (Exception ex)
+        {
+            // Keep the failure on the dialog. An unhandled throw here tears down the circuit and
+            // leaves the operator with no idea whether the app survived.
+            _deleteError = ex.Message;
+            return;
+        }
+        _showDelete = false;
+        // Full reload: every other tab of this app is now a dead route, and the nav is built from
+        // the app list this delete just changed.
+        Nav.NavigateTo("/", forceLoad: true);
+    }
+
+    private static string Format(long n) =>
+        n >= 1_000_000 ? $"{n / 1_000_000.0:0.#}M" : n >= 1000 ? $"{n / 1000.0:0.#}k" : n.ToString();
+
+    private static string FormatBytes(long bytes) => bytes switch
+    {
+        >= 1 << 30 => $"{bytes / (double)(1 << 30):0.0} GB",
+        >= 1 << 20 => $"{bytes / (double)(1 << 20):0.0} MB",
+        >= 1 << 10 => $"{bytes / (double)(1 << 10):0.0} KB",
+        _ => $"{bytes} B",
+    };
 
     private void Save()
     {

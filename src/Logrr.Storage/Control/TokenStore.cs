@@ -59,6 +59,16 @@ public sealed class TokenStore(ControlDatabase db)
         return tokens;
     }
 
+    /// <summary>Drop every token of an app, revoked ones included (app deletion).</summary>
+    public int DeleteByApp(string appId)
+    {
+        using var conn = db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = $"DELETE FROM {Table} WHERE app_id = @app;";
+        cmd.Add("@app", appId);
+        return cmd.ExecuteNonQuery();
+    }
+
     public void Revoke(string id, DateTimeOffset now)
     {
         using var conn = db.Open();

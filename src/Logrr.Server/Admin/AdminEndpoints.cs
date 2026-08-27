@@ -46,6 +46,13 @@ public static class AdminEndpoints
             return Results.Created($"/api/v1/apps/{req.Id}", new { id = req.Id });
         });
 
+        // Deletes the app's events along with it — there is no undo and no export step.
+        admin.MapDelete("/apps/{appId}", (string appId, AppDeleter deleter) =>
+        {
+            var result = deleter.Delete(appId);
+            return result is null ? Results.NotFound(new { error = "app not found" }) : Results.Ok(result);
+        });
+
         // ---- Tokens (secret shown once) ----
         admin.MapPost("/apps/{appId}/tokens", (string appId, CreateTokenRequest req, AppStore apps, TokenStore tokens) =>
         {

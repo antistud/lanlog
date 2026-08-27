@@ -151,6 +151,16 @@ public sealed class DeliveryStore(ControlDatabase db)
         return Convert.ToInt32(cmd.ExecuteScalar());
     }
 
+    /// <summary>Drop an app's delivery history (app deletion).</summary>
+    public int DeleteByApp(string appId)
+    {
+        using var conn = db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = $"DELETE FROM {Table} WHERE app_id = @app;";
+        cmd.P("@app", appId);
+        return cmd.ExecuteNonQuery();
+    }
+
     internal static Delivery Map(DbDataReader r) => new()
     {
         Id = r.GetString(r.GetOrdinal("id")),

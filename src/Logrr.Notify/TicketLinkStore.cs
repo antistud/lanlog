@@ -48,6 +48,16 @@ public sealed class TicketLinkStore(ControlDatabase db)
     /// Map of event-type → most-recent ticket url for an app, for rendering grid badges
     /// (SPEC §10.6). Loaded once per page, checked in memory per row.
     /// </summary>
+    /// <summary>Drop an app's ticket links (app deletion).</summary>
+    public int DeleteByApp(string appId)
+    {
+        using var conn = db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = $"DELETE FROM {Table} WHERE app_id = @app;";
+        cmd.P("@app", appId);
+        return cmd.ExecuteNonQuery();
+    }
+
     public IReadOnlyDictionary<long, string> TicketUrlsByEventType(string appId)
     {
         using var conn = db.Open();

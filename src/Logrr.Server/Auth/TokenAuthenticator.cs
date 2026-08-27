@@ -78,6 +78,21 @@ public sealed class TokenAuthenticator(TokenStore tokens, AppStore apps, IMemory
         return AuthResult.Success(new AuthContext(entry.Token, entry.App));
     }
 
+    /// <summary>
+    /// Drop every cached token→app resolution. Called when an app is deleted: entries are keyed
+    /// by the prefix of the presented secret, which cannot be derived from a stored token, so
+    /// there is nothing finer to evict — and without this a token cached moments before the
+    /// delete would keep ingesting into the app for the rest of its TTL, writing a partition
+    /// back onto disk after the app itself is gone.
+    /// </summary>
+    public void InvalidateAll()
+    {
+        if (cache is MemoryCache memory)
+        {
+            memory.Clear();
+        }
+    }
+
     // Update last-used at most once a minute per token, off the request thread (SPEC §5.2).
     private void StampLastUsed(string tokenId, DateTimeOffset now)
     {

@@ -48,6 +48,16 @@ public sealed class SavedSearchStore(ControlDatabase db)
         cmd.ExecuteNonQuery();
     }
 
+    /// <summary>Drop every saved search of an app (app deletion).</summary>
+    public int DeleteByApp(string appId)
+    {
+        using var conn = db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = $"DELETE FROM {Table} WHERE app_id = @app;";
+        cmd.Add("@app", appId);
+        return cmd.ExecuteNonQuery();
+    }
+
     public void Delete(string id)
     {
         using var conn = db.Open();

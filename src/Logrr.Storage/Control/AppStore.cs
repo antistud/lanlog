@@ -77,6 +77,20 @@ public sealed class AppStore(ControlDatabase db)
         cmd.ExecuteNonQuery();
     }
 
+    /// <summary>
+    /// Remove the app row. Everything that hangs off the app — tokens, rules, partitions —
+    /// is the caller's to clear first; see <c>AppDeleter</c> in the server, which is the only
+    /// supported way to delete an app.
+    /// </summary>
+    public void Delete(string id)
+    {
+        using var conn = db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = $"DELETE FROM {Table} WHERE id = @id;";
+        cmd.Add("@id", id);
+        cmd.ExecuteNonQuery();
+    }
+
     internal static AppRecord Map(DbDataReader r) => new()
     {
         Id = r.GetString(r.GetOrdinal("id")),

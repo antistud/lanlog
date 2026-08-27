@@ -97,6 +97,32 @@ public sealed class RuleStore(ControlDatabase db)
         return list;
     }
 
+    /// <summary>
+    /// Every rule scoped to one app, enabled or not. All-apps rules (a NULL <c>app_id</c>)
+    /// are deliberately excluded — they outlive any one app.
+    /// </summary>
+    public IReadOnlyList<Rule> ListByApp(string appId)
+    {
+        using var conn = db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = $"SELECT * FROM {Table} WHERE app_id = @app ORDER BY name;";
+        cmd.P("@app", appId);
+        using var r = cmd.ExecuteReader();
+        var list = new List<Rule>();
+        while (r.Read()) list.Add(Map(r));
+        return list;
+    }
+
+    /// <summary>Drop the rules scoped to one app (app deletion). All-apps rules stay.</summary>
+    public int DeleteByApp(string appId)
+    {
+        using var conn = db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = $"DELETE FROM {Table} WHERE app_id = @app;";
+        cmd.P("@app", appId);
+        return cmd.ExecuteNonQuery();
+    }
+
     public void SetLastFired(string id, DateTimeOffset now)
     {
         Exec($"UPDATE {Table} SET last_fired_utc = @now WHERE id = @id;", ("@now", now.Ms()), ("@id", id));
