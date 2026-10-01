@@ -852,6 +852,17 @@ configured JSON paths and write a ticket link.
 15 minutes; queued deliveries hold rather than hammer. Surfaced in the UI, not buried in
 a log file.
 
+**Permanent rejections are not retried.** A delivery's body is rendered once, at enqueue, and
+replayed verbatim on every attempt - so a 4xx means every retry re-sends the payload the
+endpoint just rejected. Those dead-letter on the first attempt and do **not** count toward the
+circuit breaker: a bad template says nothing about the endpoint's health, and counting it would
+stall every other rule delivering there. The exceptions are 408 and 429, which mean "same
+request, later" and keep the normal backoff.
+
+**A Test bypasses an open circuit.** It is one deliberate probe by an operator asking whether a
+fix worked, not the automated flood the breaker exists to stop - and when it succeeds the
+circuit closes, releasing the held backlog.
+
 ### 10.6 Manual submission
 
 From event detail or a selected row: **Create ticket** → choose destination → modal

@@ -120,6 +120,11 @@ health endpoint and the password form reachable, and Windows answers the app's c
 `/auth/windows`. Windows Authentication is not installed by default — add the
 *Windows Authentication* role feature first, or the option will not appear.
 
+Anonymous Authentication does not make Logrr's API anonymous. It only lets the request pass
+through IIS; Logrr then validates `X-Logrr-ApiKey`, `X-Seq-ApiKey`, or a bearer token itself. If
+Anonymous Authentication is disabled, IIS returns a Windows-authentication challenge before
+Logrr can see even a valid API key.
+
 The `system.webServer/security/authentication` section is locked by IIS, so this **cannot**
 be set from `web.config` (same 500.19 trap as `<webSocket>` in §3). Set it on the site:
 

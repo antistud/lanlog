@@ -158,6 +158,76 @@ public class DeliveryDispatcherTests : IDisposable
     }
 
     [Fact]
+    public async Task Rejected_payload_dead_letters_at_once_without_tripping_the_circuit()
+    {
+        AddDestination();
+        Enqueue();
+        var handler = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.BadRequest)
+        {
+            Content = new StringContent("the request body doesn't match the schema"),
+        });
+
+        await Dispatcher(handler).ProcessDueAsync(CancellationToken.None);
+
+        // The body a queued delivery carries is frozen, so retrying a 400 re-sends the same
+        // rejected payload forever. Dead-letter it instead, and leave the breaker alone: the
+        // endpoint is healthy, the payload is not.
+        var delivery = _h.Deliveries.Get("x1")!;
+        Assert.Equal(DeliveryStatus.DeadLettered, delivery.Status);
+        Assert.Equal(400, delivery.ResponseStatus);
+        Assert.Contains("schema", delivery.ResponseSnippet);
+        Assert.Equal(0, _h.Destinations.Get("d1")!.ConsecutiveFailures);
+        Assert.Null(_h.Destinations.Get("d1")!.CircuitOpenUntilUtc);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.RequestTimeout)]
+    [InlineData(HttpStatusCode.TooManyRequests)]
+    public async Task Retryable_4xx_still_backs_off(HttpStatusCode status)
+    {
+        AddDestination();
+        Enqueue();
+        var handler = new StubHandler(_ => new HttpResponseMessage(status));
+
+        await Dispatcher(handler).ProcessDueAsync(CancellationToken.None);
+
+        // 408 and 429 both mean "same request, later" - the one 4xx family worth retrying.
+        var delivery = _h.Deliveries.Get("x1")!;
+        Assert.Equal(DeliveryStatus.Pending, delivery.Status);
+        Assert.True(delivery.NextAttemptUtc > _now);
+        Assert.Equal(1, _h.Destinations.Get("d1")!.ConsecutiveFailures);
+    }
+
+    [Fact]
+    public async Task Test_delivery_is_sent_through_an_open_circuit()
+    {
+        AddDestination();
+        _h.Deliveries.Enqueue(new Delivery
+        {
+            Id = "t1", DestinationId = "d1", Source = DeliverySource.Test,
+            CreatedUtc = _now, Attempt = 0, NextAttemptUtc = _now,
+            Status = DeliveryStatus.Pending, RequestBody = "{}",
+        });
+        for (var i = 0; i < 5; i++)
+        {
+            _h.Destinations.RecordFailure("d1", _now);
+        }
+        Assert.NotNull(_h.Destinations.Get("d1")!.CircuitOpenUntilUtc);
+
+        var handler = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK));
+        await Dispatcher(handler).ProcessDueAsync(CancellationToken.None);
+
+        // The operator's probe goes out even though the breaker is open (a rule-fired delivery
+        // in the same state stays held - see Open_circuit_holds_delivery_without_sending).
+        Assert.Single(handler.Requests);
+        Assert.Equal(DeliveryStatus.Delivered, _h.Deliveries.Get("t1")!.Status);
+
+        // And because it succeeded, the circuit is closed again for everything else.
+        Assert.Null(_h.Destinations.Get("d1")!.CircuitOpenUntilUtc);
+        Assert.Equal(0, _h.Destinations.Get("d1")!.ConsecutiveFailures);
+    }
+
+    [Fact]
     public async Task Hmac_mode_signs_the_request()
     {
         _h.Destinations.Create(new Destination

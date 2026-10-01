@@ -156,25 +156,42 @@ if (-not (Test-Path "IIS:\Sites\$SiteName")) {
     Ok "Site '$SiteName' updated (physicalPath + pool)"
 }
 
-# 6b) Windows sign-in, half two: the IIS site. system.webServer/security/authentication is locked
-#     at server level, so this cannot come from the web.config written above - it has to be set on
-#     applicationHost.config, which is what /commit:apphost does. Both schemes are required:
-#     Windows answers the app's challenge on /auth/windows, and Anonymous keeps token ingest, the
-#     health endpoint and the password form reachable for everything that has no Windows identity.
-if ($WindowsAuth) {
-    $appcmd = Join-Path $env:windir "system32\inetsrv\appcmd.exe"
-    foreach ($section in "windowsAuthentication", "anonymousAuthentication") {
-        & $appcmd set config "$SiteName" -section:"system.webServer/security/authentication/$section" /enabled:true /commit:apphost | Out-Null
-        if ($LASTEXITCODE -ne 0) {
-            # The usual cause for windowsAuthentication: the role feature is not installed, so IIS
-            # does not know the section at all. Nothing later can work, so stop here and say so.
-            throw "appcmd could not enable $section on site '$SiteName' (exit $LASTEXITCODE).`n" +
-                  "If this is windowsAuthentication, install the role feature first, then re-run:`n" +
-                  "  Windows Server: Install-WindowsFeature Web-Windows-Auth`n" +
-                  "  Windows client: Enable-WindowsOptionalFeature -Online -FeatureName IIS-WindowsAuthentication"
-        }
+# 6b) Host authentication. API keys are authenticated by Logrr, after IIS has forwarded the
+#     request, so Anonymous Authentication is not optional: if it is off, IIS returns its own 401
+#     before Logrr can inspect X-Logrr-ApiKey (or either compatible token header). Apply this on
+#     every deployment rather than only with -WindowsAuth, since the site may inherit a server-wide
+#     setting or retain configuration from an earlier deployment.
+#
+#     Windows Authentication is equally explicit. Turning -WindowsAuth off must undo a previous
+#     deployment that turned it on; otherwise this script is not actually idempotent and API clients
+#     can unexpectedly be challenged by IIS. These sections are locked at server level, so they
+#     cannot live in web.config and must be written to applicationHost.config via /commit:apphost.
+$appcmd = Join-Path $env:windir "system32\inetsrv\appcmd.exe"
+
+& $appcmd set config "$SiteName" -section:"system.webServer/security/authentication/anonymousAuthentication" /enabled:true /commit:apphost | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    throw "appcmd could not enable anonymousAuthentication on site '$SiteName' (exit $LASTEXITCODE). " +
+          "Anonymous Authentication is required so API-key requests can reach Logrr."
+}
+
+$windowsEnabled = if ($WindowsAuth) { "true" } else { "false" }
+& $appcmd set config "$SiteName" -section:"system.webServer/security/authentication/windowsAuthentication" "/enabled:$windowsEnabled" /commit:apphost | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    if ($WindowsAuth) {
+        throw "appcmd could not enable windowsAuthentication on site '$SiteName' (exit $LASTEXITCODE).`n" +
+              "Install the Windows Authentication role feature, then re-run:`n" +
+              "  Windows Server: Install-WindowsFeature Web-Windows-Auth`n" +
+              "  Windows client: Enable-WindowsOptionalFeature -Online -FeatureName IIS-WindowsAuthentication"
     }
+    # A machine without the optional Windows Authentication role may not have this config section
+    # at all. That already means Windows auth is unavailable, so it is the desired off state.
+    Warn "Could not explicitly disable windowsAuthentication (exit $LASTEXITCODE); the optional IIS role may not be installed."
+}
+
+if ($WindowsAuth) {
     Ok "IIS Windows + Anonymous Authentication enabled on site '$SiteName'"
+} else {
+    Ok "IIS Anonymous Authentication enabled and Windows Authentication disabled on site '$SiteName'"
 }
 
 Start-WebAppPool -Name $PoolName

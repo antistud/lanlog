@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
@@ -90,7 +91,12 @@ public sealed class DeliveryDispatcher(
         }
 
         // Circuit breaker: hold rather than hammer while the circuit is open (SPEC §10.5).
-        if (destination.CircuitOpenUntilUtc is { } until && until > now)
+        // A Test is exempt: it is an operator standing in front of the destination asking "is it
+        // fixed yet?", and holding that for 15 minutes answers the wrong question. The breaker
+        // exists to spare a struggling endpoint an automated flood, not to block one deliberate
+        // probe -- and a probe that succeeds closes the circuit, which is the point of running it.
+        if (delivery.Source != DeliverySource.Test
+            && destination.CircuitOpenUntilUtc is { } until && until > now)
         {
             deliveries.Update(delivery with { NextAttemptUtc = until });
             return;
@@ -117,6 +123,12 @@ public sealed class DeliveryDispatcher(
                 if (response.IsSuccessStatusCode)
                 {
                     await OnSuccess(delivery, destination, (int)response.StatusCode, body, now).ConfigureAwait(false);
+                }
+                else if (IsPermanent(response.StatusCode))
+                {
+                    OnPermanentFailure(delivery, (int)response.StatusCode,
+                        $"HTTP {(int)response.StatusCode} - the destination rejected this request; " +
+                        "retrying the same body cannot succeed", body);
                 }
                 else
                 {
@@ -165,6 +177,34 @@ public sealed class DeliveryDispatcher(
         }
 
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// A 4xx says the request itself is wrong, and a queued delivery's body is frozen at enqueue
+    /// time -- so every retry re-sends the identical payload to the endpoint that just rejected
+    /// it. 408 and 429 are the exceptions: both mean "same request, later". Everything else is
+    /// dead on arrival, and treating it as a transient fault burns the retry schedule and trips
+    /// the circuit breaker over what is really a bad template.
+    /// </summary>
+    private static bool IsPermanent(HttpStatusCode status) =>
+        (int)status is >= 400 and < 500
+        && status is not (HttpStatusCode.RequestTimeout or HttpStatusCode.TooManyRequests);
+
+    /// <summary>
+    /// Dead-letter without touching the destination's failure count: a rejected payload says
+    /// nothing about whether the endpoint is healthy, and counting it would open the circuit and
+    /// stall every other rule that delivers there.
+    /// </summary>
+    private void OnPermanentFailure(Delivery delivery, int status, string error, string? body)
+    {
+        deliveries.Update(delivery with
+        {
+            Attempt = delivery.Attempt + 1,
+            Status = DeliveryStatus.DeadLettered,
+            ResponseStatus = status,
+            ResponseSnippet = Snippet(body),
+            Error = error,
+        });
     }
 
     private void OnFailure(Delivery delivery, Destination destination, int? status, string error, string? body, DateTimeOffset now)

@@ -1,6 +1,8 @@
 using System.Net;
 using System.Security.Claims;
+using System.Text;
 using System.Text.Encodings.Web;
+using Logrr.Contracts;
 using Logrr.Server.Security;
 using Logrr.Storage;
 using Logrr.Storage.Control;
@@ -421,6 +423,44 @@ public class WindowsSignInRoutingTests
             var html = await resp.Content.ReadAsStringAsync();
             Assert.Contains("/auth/windows", html);
             Assert.Contains("/auth/login", html);
+        }
+        finally { Cleanup(factory, path); }
+    }
+
+    [Fact]
+    public async Task A_valid_api_key_is_not_challenged_by_windows_authentication()
+    {
+        var path = TempPath();
+        using var factory = Factory(path, windowsAuth: true);
+        try
+        {
+            using (var scope = factory.Services.CreateScope())
+            {
+                var apps = scope.ServiceProvider.GetRequiredService<AppStore>();
+                var tokens = scope.ServiceProvider.GetRequiredService<TokenStore>();
+                apps.Create(new AppRecord
+                {
+                    Id = "api-client", Name = "API client", MinimumLevel = Logrr.Contracts.LogLevel.Verbose,
+                    IsEnabled = true, CreatedUtc = DateTimeOffset.UtcNow,
+                });
+                var secret = TokenSecret.Generate("api-client");
+                tokens.Create(new TokenRecord
+                {
+                    Id = Guid.NewGuid().ToString("N"), AppId = "api-client",
+                    Prefix = TokenSecret.Prefix(secret), Hash = TokenSecret.Hash(secret),
+                    Scopes = TokenScopes.Ingest, CreatedUtc = DateTimeOffset.UtcNow,
+                });
+
+                var client = NoRedirects(factory);
+                client.DefaultRequestHeaders.Add("X-Logrr-ApiKey", secret);
+                var body = $"{{\"@t\":\"{DateTimeOffset.UtcNow:O}\",\"@mt\":\"API key accepted\"}}";
+
+                var response = await client.PostAsync("/api/events/raw",
+                    new StringContent(body, Encoding.UTF8, "application/vnd.serilog.clef"));
+
+                Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+                Assert.Empty(response.Headers.WwwAuthenticate);
+            }
         }
         finally { Cleanup(factory, path); }
     }
